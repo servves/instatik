@@ -7,10 +7,10 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                             QProgressBar, QTextEdit, QFileDialog, QMessageBox,
-                            QCheckBox, QTabWidget, QDialog)
+                            QCheckBox, QTabWidget, QDialog)  # Import QDialog
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QIcon, QPixmap, QIntValidator  # QIntValidator'ı içe aktarın
-from instaloader import Instaloader, Post
+from PyQt5.QtGui import QIcon, QIntValidator
+from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException
 import requests
 from urllib.parse import urlparse
 from TikTokApi import TikTokApi
@@ -222,12 +222,28 @@ class InstagramDownloadWorker(DownloadWorker):
                 # Rate limiting
                 time.sleep(2)  # Instagram rate limit'lerini aşmamak için bekle
 
+        except TooManyRequestsException as e:
+            logging.error(f"Rate limit exceeded: {str(e)}")
+            self.handle_rate_limit()
+        except LoginRequiredException as e:
+            logging.error(f"Login required: {str(e)}")
+            self.login_required.emit()
         except Exception as e:
             self.error.emit(f"Genel hata: {str(e)}")
             logging.error(f"General error: {str(e)}")
-
         finally:
             self.finished.emit()
+
+    def handle_rate_limit(self):
+        delay = 60  # Initial delay of 60 seconds
+        max_retries = 5
+        for retry in range(max_retries):
+            if not self.is_running:
+                break
+            logging.info(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
+            self.progress.emit(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
+            time.sleep(delay)
+            delay *= 2  # Exponential backoff
 
 class TikTokDownloadWorker(DownloadWorker):
     def __init__(self, keyword_or_url, download_path, download_type="keyword"):
@@ -321,12 +337,25 @@ class TikTokDownloadWorker(DownloadWorker):
                 # Rate limiting
                 time.sleep(1)  # TikTok rate limit'lerini aşmamak için bekle
                     
+        except TooManyRequestsException as e:
+            logging.error(f"Rate limit exceeded: {str(e)}")
+            self.handle_rate_limit()
         except Exception as e:
             self.error.emit(f"Genel hata: {str(e)}")
             logging.error(f"General TikTok error: {str(e)}")
-        
         finally:
             self.finished.emit()
+
+    def handle_rate_limit(self):
+        delay = 60  # Initial delay of 60 seconds
+        max_retries = 5
+        for retry in range(max_retries):
+            if not self.is_running:
+                break
+            logging.info(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
+            self.progress.emit(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
+            time.sleep(delay)
+            delay *= 2  # Exponential backoff
 
     def extract_video_id(self, url):
         parsed = urlparse(url)
@@ -474,7 +503,7 @@ class SocialMediaDownloader(QMainWindow):
         self.tiktok_progress_bar = QProgressBar()
         layout.addWidget(self.tiktok_progress_bar)
 
-        # Log alanı
+# Log alanı
         self.tiktok_log_text = QTextEdit()
         self.tiktok_log_text.setReadOnly(True)
         layout.addWidget(self.tiktok_log_text)
@@ -531,12 +560,6 @@ class SocialMediaDownloader(QMainWindow):
             self.show_error_message('Lütfen bir anahtar kelime girin.')
             return
 
-        try:
-            limit = int(self.insta_limit_input.text()) if self.insta_limit_input.text() else None
-        except ValueError:
-            self.show_error_message('Geçersiz indirme limiti!')
-            return
-
         os.makedirs(self.instagram_download_path, exist_ok=True)
 
         self.insta_download_button.setEnabled(False)
@@ -551,7 +574,7 @@ class SocialMediaDownloader(QMainWindow):
             self.video_checkbox.isChecked(),
             self.photo_checkbox.isChecked()
         )
-        
+
         self.instagram_worker.progress.connect(
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.download_progress.connect(
@@ -560,7 +583,7 @@ class SocialMediaDownloader(QMainWindow):
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.finished.connect(self.instagram_download_finished)
         self.instagram_worker.login_required.connect(self.show_instagram_login)
-        
+
         self.instagram_worker.start()
 
     def show_instagram_login(self):
@@ -569,7 +592,7 @@ class SocialMediaDownloader(QMainWindow):
             username = dialog.username.text()
             password = dialog.password.text()
             remember = dialog.remember_me.isChecked()
-            
+
             if self.instagram_worker.set_login_credentials(username, password):
                 self.insta_login_status.setText(f'Giriş durumu: {username} olarak giriş yapıldı')
                 if remember:
@@ -605,12 +628,6 @@ class SocialMediaDownloader(QMainWindow):
             self.show_error_message('Lütfen bir anahtar kelime veya URL girin.')
             return
 
-        try:
-            limit = int(self.tiktok_limit_input.text()) if self.tiktok_limit_input.text() else None
-        except ValueError:
-            self.show_error_message('Geçersiz indirme limiti!')
-            return
-
         os.makedirs(self.tiktok_download_path, exist_ok=True)
 
         self.tiktok_download_button.setEnabled(False)
@@ -625,7 +642,7 @@ class SocialMediaDownloader(QMainWindow):
             self.tiktok_download_path,
             download_type
         )
-        
+
         self.tiktok_worker.progress.connect(
             lambda msg: self.log_message('tiktok', msg))
         self.tiktok_worker.download_progress.connect(
@@ -633,7 +650,7 @@ class SocialMediaDownloader(QMainWindow):
         self.tiktok_worker.error.connect(
             lambda msg: self.log_message('tiktok', msg))
         self.tiktok_worker.finished.connect(self.tiktok_download_finished)
-        
+
         self.tiktok_worker.start()
 
     def stop_instagram_download(self):
@@ -673,15 +690,15 @@ class SocialMediaDownloader(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # Modern görünüm
-    
+
     # Uygulama simgesi
     app_icon = QIcon('icon.png')
     app.setWindowIcon(app_icon)
-    
+
     # Ana pencereyi oluştur ve göster
     window = SocialMediaDownloader()
     window.show()
-    
+
     sys.exit(app.exec_())
 
 if __name__ == '__main__':
