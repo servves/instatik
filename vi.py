@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QProgressBar, QTextEdit, QFileDialog, QMessageBox,
                             QCheckBox, QTabWidget, QDialog)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtGui import QIcon, QPixmap, QIntValidator  # QIntValidator'ı içe aktarın
 from instaloader import Instaloader, Post
 import requests
 from urllib.parse import urlparse
@@ -312,7 +312,7 @@ class TikTokDownloadWorker(DownloadWorker):
                             if os.path.exists(temp_filename):
                                 os.remove(temp_filename)
                             self.progress.emit(f"Tekrar eden video atlandı: {video_data['id']}")
-                    
+
                 except Exception as e:
                     self.error.emit(f"Video işleme hatası: {str(e)}")
                     logging.error(f"TikTok processing error: {str(e)}")
@@ -635,6 +635,40 @@ class SocialMediaDownloader(QMainWindow):
         self.tiktok_worker.finished.connect(self.tiktok_download_finished)
         
         self.tiktok_worker.start()
+
+    def stop_instagram_download(self):
+        if self.instagram_worker:
+            self.instagram_worker.stop()
+            self.log_message('instagram', "İndirme durduruldu.")
+
+    def stop_tiktok_download(self):
+        if self.tiktok_worker:
+            self.tiktok_worker.stop()
+            self.log_message('tiktok', "İndirme durduruldu.")
+
+    def instagram_download_finished(self):
+        self.insta_download_button.setEnabled(True)
+        self.insta_stop_button.setEnabled(False)
+        self.insta_search_input.setEnabled(True)
+        self.log_message('instagram', "İndirme tamamlandı!")
+
+    def tiktok_download_finished(self):
+        self.tiktok_download_button.setEnabled(True)
+        self.tiktok_stop_button.setEnabled(False)
+        self.tiktok_search_input.setEnabled(True)
+        self.log_message('tiktok', "İndirme tamamlandı!")
+
+    def log_message(self, platform, message):
+        if platform == 'instagram':
+            self.insta_log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+        else:
+            self.tiktok_log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+
+    def update_progress(self, platform, value):
+        if platform == 'instagram':
+            self.insta_progress_bar.setValue(value)
+        else:
+            self.tiktok_progress_bar.setValue(value)
 
 def main():
     app = QApplication(sys.argv)
