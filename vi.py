@@ -7,7 +7,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                             QProgressBar, QTextEdit, QFileDialog, QMessageBox,
-                            QCheckBox, QTabWidget, QDialog)  # Import QDialog
+                            QCheckBox, QTabWidget, QDialog)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QIntValidator
 from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException
@@ -34,23 +34,19 @@ class LoginDialog(QDialog):
         self.setMinimumWidth(300)
         layout = QVBoxLayout(self)
 
-        # Logo ve başlık
         title_label = QLabel(f'{self.platform} hesabınızla giriş yapın:')
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
 
-        # Kullanıcı adı
         self.username = QLineEdit(self)
         self.username.setPlaceholderText('Kullanıcı Adı')
         layout.addWidget(self.username)
 
-        # Şifre
         self.password = QLineEdit(self)
         self.password.setPlaceholderText('Şifre')
         self.password.setEchoMode(QLineEdit.Password)
         layout.addWidget(self.password)
 
-        # Butonlar
         button_layout = QHBoxLayout()
         
         self.login_button = QPushButton('Giriş Yap', self)
@@ -75,7 +71,6 @@ class LoginDialog(QDialog):
         button_layout.addWidget(self.cancel_button)
         layout.addLayout(button_layout)
 
-        # Remember me checkbox
         self.remember_me = QCheckBox('Beni Hatırla', self)
         layout.addWidget(self.remember_me)
 
@@ -148,8 +143,7 @@ class InstagramDownloadWorker(DownloadWorker):
 
     def run(self):
         try:
-            # Login check
-            if not self.L.test_login():
+            if not self.L.context.is_logged_in:
                 self.login_required.emit()
                 return
 
@@ -157,12 +151,10 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.info(f"Searching for '{self.keyword}' on Instagram")
 
             try:
-                # Try as profile first
-                profile = self.L.get_profile(self.keyword)
+                profile = self.L.check_profile_id(self.keyword)
                 posts = profile.get_posts()
                 self.progress.emit(f"Profil bulundu: {profile.username}")
             except Exception:
-                # If not a profile, try as hashtag
                 try:
                     posts = self.L.get_hashtag_posts(self.keyword)
                     self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
@@ -179,11 +171,9 @@ class InstagramDownloadWorker(DownloadWorker):
                 try:
                     is_video = post.is_video
                     if (is_video and self.download_videos) or (not is_video and self.download_photos):
-                        # Download the post
                         self.progress.emit(f"İndiriliyor: {post.shortcode}")
                         self.L.download_post(post, target=self.download_path)
 
-                        # Handle the downloaded file
                         file_pattern = f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S')}_{post.shortcode}"
                         downloaded_files = [f for f in os.listdir(self.download_path) 
                                          if f.startswith(file_pattern)]
@@ -193,7 +183,6 @@ class InstagramDownloadWorker(DownloadWorker):
                             file_hash = self.calculate_hash(file_path)
 
                             if file_hash not in self.downloaded_hashes:
-                                # Rename with hash
                                 new_name = f"instagram_{post.shortcode}_{file_hash[:8]}{os.path.splitext(file_name)[1]}"
                                 new_path = os.path.join(self.download_path, new_name)
                                 os.rename(file_path, new_path)
@@ -219,8 +208,7 @@ class InstagramDownloadWorker(DownloadWorker):
                     logging.error(f"Content download error: {str(e)}")
                     continue
 
-                # Rate limiting
-                time.sleep(2)  # Instagram rate limit'lerini aşmamak için bekle
+                time.sleep(2)
 
         except TooManyRequestsException as e:
             logging.error(f"Rate limit exceeded: {str(e)}")
@@ -235,7 +223,7 @@ class InstagramDownloadWorker(DownloadWorker):
             self.finished.emit()
 
     def handle_rate_limit(self):
-        delay = 60  # Initial delay of 60 seconds
+        delay = 60
         max_retries = 5
         for retry in range(max_retries):
             if not self.is_running:
@@ -243,7 +231,7 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.info(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
             self.progress.emit(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
             time.sleep(delay)
-            delay *= 2  # Exponential backoff
+            delay *= 2
 
 class TikTokDownloadWorker(DownloadWorker):
     def __init__(self, keyword_or_url, download_path, download_type="keyword"):
@@ -334,8 +322,7 @@ class TikTokDownloadWorker(DownloadWorker):
                     logging.error(f"TikTok processing error: {str(e)}")
                     continue
 
-                # Rate limiting
-                time.sleep(1)  # TikTok rate limit'lerini aşmamak için bekle
+                time.sleep(1)
                     
         except TooManyRequestsException as e:
             logging.error(f"Rate limit exceeded: {str(e)}")
@@ -347,7 +334,7 @@ class TikTokDownloadWorker(DownloadWorker):
             self.finished.emit()
 
     def handle_rate_limit(self):
-        delay = 60  # Initial delay of 60 seconds
+        delay = 60
         max_retries = 5
         for retry in range(max_retries):
             if not self.is_running:
@@ -355,7 +342,7 @@ class TikTokDownloadWorker(DownloadWorker):
             logging.info(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
             self.progress.emit(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
             time.sleep(delay)
-            delay *= 2  # Exponential backoff
+            delay *= 2
 
     def extract_video_id(self, url):
         parsed = urlparse(url)
@@ -375,12 +362,10 @@ class SocialMediaDownloader(QMainWindow):
         self.setWindowTitle('Sosyal Medya İçerik İndirici')
         self.setGeometry(100, 100, 900, 700)
 
-        # Ana widget ve layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
-        # Tab widget
         self.tabs = QTabWidget()
         self.instagram_tab = QWidget()
         self.tiktok_tab = QWidget()
@@ -390,17 +375,14 @@ class SocialMediaDownloader(QMainWindow):
         
         layout.addWidget(self.tabs)
 
-        # Sekmeleri ayarla
         self.setup_instagram_tab()
         self.setup_tiktok_tab()
 
-        # Durum çubuğu
         self.statusBar().showMessage('Hazır')
 
     def setup_instagram_tab(self):
         layout = QVBoxLayout(self.instagram_tab)
 
-        # Arama alanı
         search_layout = QHBoxLayout()
         self.insta_search_input = QLineEdit()
         self.insta_search_input.setPlaceholderText('Kullanıcı adı veya hashtag girin...')
@@ -413,7 +395,6 @@ class SocialMediaDownloader(QMainWindow):
         
         layout.addLayout(search_layout)
 
-       # Seçenekler
         options_layout = QHBoxLayout()
         self.video_checkbox = QCheckBox('Videoları İndir')
         self.photo_checkbox = QCheckBox('Fotoğrafları İndir')
@@ -423,7 +404,6 @@ class SocialMediaDownloader(QMainWindow):
         options_layout.addWidget(self.photo_checkbox)
         layout.addLayout(options_layout)
 
-        # İndirme limiti
         limit_layout = QHBoxLayout()
         limit_layout.addWidget(QLabel('İndirme Limiti:'))
         self.insta_limit_input = QLineEdit()
@@ -432,7 +412,6 @@ class SocialMediaDownloader(QMainWindow):
         limit_layout.addWidget(self.insta_limit_input)
         layout.addLayout(limit_layout)
 
-        # İndirme butonları
         button_layout = QHBoxLayout()
         self.insta_download_button = QPushButton('İndirmeyi Başlat')
         self.insta_download_button.clicked.connect(self.start_instagram_download)
@@ -444,29 +423,24 @@ class SocialMediaDownloader(QMainWindow):
         button_layout.addWidget(self.insta_stop_button)
         layout.addLayout(button_layout)
 
-        # İlerleme çubuğu
         self.insta_progress_bar = QProgressBar()
         layout.addWidget(self.insta_progress_bar)
 
-        # Log alanı
         self.insta_log_text = QTextEdit()
         self.insta_log_text.setReadOnly(True)
         layout.addWidget(self.insta_log_text)
 
-        # Login durumu
         self.insta_login_status = QLabel('Giriş durumu: Giriş yapılmadı')
         layout.addWidget(self.insta_login_status)
 
     def setup_tiktok_tab(self):
         layout = QVBoxLayout(self.tiktok_tab)
 
-        # Arama türü seçimi
         search_type_layout = QHBoxLayout()
         self.tiktok_search_type = QCheckBox('URL Modunu Kullan')
         search_type_layout.addWidget(self.tiktok_search_type)
         layout.addLayout(search_type_layout)
 
-        # Arama alanı
         search_layout = QHBoxLayout()
         self.tiktok_search_input = QLineEdit()
         self.tiktok_search_input.setPlaceholderText('TikTok hashtag/kelime veya video URL girin...')
@@ -478,7 +452,6 @@ class SocialMediaDownloader(QMainWindow):
         search_layout.addWidget(self.tiktok_path_button)
         layout.addLayout(search_layout)
 
-        # İndirme limiti
         limit_layout = QHBoxLayout()
         limit_layout.addWidget(QLabel('İndirme Limiti:'))
         self.tiktok_limit_input = QLineEdit()
@@ -487,7 +460,6 @@ class SocialMediaDownloader(QMainWindow):
         limit_layout.addWidget(self.tiktok_limit_input)
         layout.addLayout(limit_layout)
 
-        # İndirme butonları
         button_layout = QHBoxLayout()
         self.tiktok_download_button = QPushButton('İndirmeyi Başlat')
         self.tiktok_download_button.clicked.connect(self.start_tiktok_download)
@@ -499,11 +471,9 @@ class SocialMediaDownloader(QMainWindow):
         button_layout.addWidget(self.tiktok_stop_button)
         layout.addLayout(button_layout)
 
-        # İlerleme çubuğu
         self.tiktok_progress_bar = QProgressBar()
         layout.addWidget(self.tiktok_progress_bar)
 
-# Log alanı
         self.tiktok_log_text = QTextEdit()
         self.tiktok_log_text.setReadOnly(True)
         layout.addWidget(self.tiktok_log_text)
@@ -689,13 +659,11 @@ class SocialMediaDownloader(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Modern görünüm
+    app.setStyle('Fusion')
 
-    # Uygulama simgesi
     app_icon = QIcon('icon.png')
     app.setWindowIcon(app_icon)
 
-    # Ana pencereyi oluştur ve göster
     window = SocialMediaDownloader()
     window.show()
 
