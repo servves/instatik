@@ -3,6 +3,7 @@ import os
 import hashlib
 import json
 import time
+import logging
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
@@ -14,7 +15,6 @@ from instaloader import Instaloader, Profile, LoginRequiredException, TooManyReq
 import requests
 from urllib.parse import urlparse
 from TikTokApi import TikTokApi
-import logging
 
 # Logging ayarları
 logging.basicConfig(
@@ -48,7 +48,6 @@ class LoginDialog(QDialog):
         layout.addWidget(self.password)
 
         button_layout = QHBoxLayout()
-        
         self.login_button = QPushButton('Giriş Yap', self)
         self.login_button.clicked.connect(self.accept)
         self.login_button.setStyleSheet("""
@@ -121,6 +120,7 @@ class InstagramDownloadWorker(DownloadWorker):
         self.keyword = keyword
         self.download_videos = download_videos
         self.download_photos = download_photos
+        self.username = None
         
         self.L = Instaloader(
             download_videos=download_videos,
@@ -129,63 +129,51 @@ class InstagramDownloadWorker(DownloadWorker):
             download_geotags=False,
             download_comments=False,
             save_metadata=False,
-            quiet=True
+            quiet=True,
+            max_connection_attempts=3
         )
 
     def set_login_credentials(self, username, password):
         try:
+            self.username = username
             self.L.context.log("Attempting login...")
-            self.session = self.L.login(username, password)
-
-            # Verify login was successful
+            self.L.login(username, password)
+            
             if self.L.context.is_logged_in:
                 self.L.context.log("Login successful")
-                # Save session for future use
                 self.L.save_session_to_file(f"{username}_session")
                 return True
             else:
                 raise Exception("Login verification failed")
-
+                
         except Exception as e:
             self.error.emit(f"Giriş hatası: {str(e)}")
             logging.error(f"Instagram login error: {str(e)}")
-            # Add retry mechanism
-            self.handle_login_error(username, password)
             return False
-    def save_session(self):
-        if self.L.context.is_logged_in and hasattr(self, 'username'):
-            try:
-                self.L.save_session_to_file(f"{self.username}_session")
-                logging.info("Session saved successfully")
-            except Exception as e:
-                logging.error(f"Error saving session: {str(e)}")
-    
-    def load_session(self):
-        if hasattr(self, 'username'):
-            try:
-                self.L.load_session_from_file(f"{self.username}_session")
-                return self.L.context.is_logged_in
-            except Exception as e:
-                logging.error(f"Error loading session: {str(e)}")
-                return False
-        return False
-    def handle_login_error(self, username, password):
-        max_retries = 3
-        retry_delay = 5  # seconds
 
-        for attempt in range(max_retries):
+    def handle_rate_limit(self):
+        base_delay = 60
+        max_retries = 3
+        
+        for retry in range(max_retries):
+            wait_time = base_delay * (2 ** retry)
+            self.progress.emit(f"Rate limit aşıldı. {wait_time} saniye bekleniyor... ({retry + 1}/{max_retries})")
+            time.sleep(wait_time)
+            
             try:
-                time.sleep(retry_delay * (attempt + 1))
-                self.L.context.log(f"Retry attempt {attempt + 1}")
-                if self.L.login(username, password):
+                if self.L.context.is_logged_in:
+                    return True
+                if self.username:
+                    self.L.load_session_from_file(f"{self.username}_session")
                     return True
             except Exception as e:
-                logging.error(f"Login retry {attempt + 1} failed: {str(e)}")
-        return False
+                logging.error(f"Rate limit retry failed: {str(e)}")
+                if retry == max_retries - 1:
+                    self.error.emit("Rate limit aşımı sorunu devam ediyor. Lütfen daha sonra tekrar deneyin.")
+                    return False
 
     def run(self):
         try:
-            # Oturum kontrolü ve giriş durumu
             if not self.L.context.is_logged_in:
                 self.login_required.emit()
                 return
@@ -193,47 +181,40 @@ class InstagramDownloadWorker(DownloadWorker):
             self.progress.emit(f"'{self.keyword}' için arama yapılıyor...")
             logging.info(f"Searching for '{self.keyword}' on Instagram")
 
-            # Rate limit kontrolü için değişkenler
             max_retries = 3
-            base_delay = 5
+            retry_delay = 5
             posts = None
-
+            
             for attempt in range(max_retries):
                 try:
-                    # Hashtag veya kullanıcı adı kontrolü
                     if self.keyword.startswith('#'):
                         hashtag = self.keyword.lstrip('#')
                         posts = list(self.L.get_hashtag_posts(hashtag))
                         self.progress.emit(f"#{hashtag} hashtag'i için sonuçlar bulundu")
                     else:
-                        # Önce profil olarak dene
                         try:
                             profile = Profile.from_username(self.L.context, self.keyword)
                             posts = list(profile.get_posts())
                             self.progress.emit(f"Profil bulundu: {profile.username}")
                         except Exception as profile_error:
-                            # Profil bulunamazsa hashtag olarak dene
                             logging.warning(f"Profile search failed, trying as hashtag: {str(profile_error)}")
                             posts = list(self.L.get_hashtag_posts(self.keyword))
                             self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
-
-                    if posts:  # Eğer posts başarıyla alındıysa döngüden çık
+                    
+                    if posts:
                         break
-
+                        
                 except TooManyRequestsException as e:
-                    wait_time = base_delay * (2 ** attempt)
-                    self.progress.emit(f"Rate limit aşıldı. {wait_time} saniye bekleniyor... ({attempt + 1}/{max_retries})")
-                    logging.warning(f"Rate limit hit, waiting {wait_time} seconds...")
-                    time.sleep(wait_time)
-                    if attempt == max_retries - 1:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        self.progress.emit(f"Rate limit aşıldı. {wait_time} saniye bekleniyor...")
+                        time.sleep(wait_time)
+                    else:
                         raise e
-                    continue
-
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        wait_time = base_delay * (attempt + 1)
+                        wait_time = retry_delay * (attempt + 1)
                         self.progress.emit(f"Hata oluştu. Yeniden deneniyor... ({attempt + 1}/{max_retries})")
-                        logging.error(f"Error occurred: {str(e)}")
                         time.sleep(wait_time)
                     else:
                         raise e
@@ -242,7 +223,6 @@ class InstagramDownloadWorker(DownloadWorker):
                 self.error.emit("Gönderi bulunamadı!")
                 return
 
-            # İndirme işlemi
             total_downloaded = 0
             for post in posts:
                 if not self.is_running:
@@ -252,14 +232,12 @@ class InstagramDownloadWorker(DownloadWorker):
                     is_video = post.is_video
                     if (is_video and self.download_videos) or (not is_video and self.download_photos):
                         self.progress.emit(f"İndiriliyor: {post.shortcode}")
-
-                        # Rate limiting için kısa bekleme
-                        time.sleep(2)
-
+                        
+                        time.sleep(2)  # Rate limiting için bekleme
+                        
                         try:
                             self.L.download_post(post, target=self.download_path)
                         except TooManyRequestsException:
-                            # Rate limit durumunda bekleme ve yeniden deneme
                             time.sleep(30)
                             self.L.download_post(post, target=self.download_path)
 
@@ -269,7 +247,6 @@ class InstagramDownloadWorker(DownloadWorker):
 
                         for file_name in downloaded_files:
                             file_path = os.path.join(self.download_path, file_name)
-
                             try:
                                 file_hash = self.calculate_hash(file_path)
 
@@ -284,7 +261,7 @@ class InstagramDownloadWorker(DownloadWorker):
                                         'type': 'video' if is_video else 'photo',
                                         'file_path': new_path
                                     }
-
+                                    
                                     total_downloaded += 1
                                     self.progress.emit(f"İndirilen: {new_name}")
                                 else:
@@ -301,7 +278,7 @@ class InstagramDownloadWorker(DownloadWorker):
                 except Exception as post_error:
                     self.error.emit(f"İçerik indirme hatası: {str(post_error)}")
                     logging.error(f"Content download error: {str(post_error)}")
-                    time.sleep(5)  # Hata durumunda kısa bekleme
+                    time.sleep(5)
                     continue
 
         except TooManyRequestsException as e:
@@ -319,16 +296,6 @@ class InstagramDownloadWorker(DownloadWorker):
             if total_downloaded > 0:
                 self.progress.emit(f"Toplam {total_downloaded} içerik indirildi.")
             self.finished.emit()
-        def handle_rate_limit(self):
-            delay = 60
-            max_retries = 5
-            for retry in range(max_retries):
-                if not self.is_running:
-                    break
-                logging.info(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
-                self.progress.emit(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
-                time.sleep(delay)
-                delay *= 2
 
 class TikTokDownloadWorker(DownloadWorker):
     def __init__(self, keyword_or_url, download_path, download_type="keyword"):
@@ -365,106 +332,143 @@ class TikTokDownloadWorker(DownloadWorker):
             logging.error(f"TikTok download error: {str(e)}")
             return False
 
-    def run(self):
-        try:
-            api = TikTokApi()
-            
-            if self.download_type == "keyword":
-                self.progress.emit(f"'{self.keyword_or_url}' için arama yapılıyor...")
-                videos = api.search.videos(self.keyword_or_url, count=50)
-            else:
-                video_id = self.extract_video_id(self.keyword_or_url)
-                self.progress.emit(f"Video ID: {video_id} indiriliyor...")
-                videos = [api.video(id=video_id)]
-
-            total_downloaded = 0
-
-            for video in videos:
-                if not self.is_running:
-                    break
-
-                try:
-                    video_data = video.info()
-                    video_url = video_data['video']['downloadAddr']
-                    
-                    temp_filename = os.path.join(self.download_path, f"temp_{video_data['id']}.mp4")
-                    
-                    if self.download_video(video_url, temp_filename):
-                        file_hash = self.calculate_hash(temp_filename)
-                        
-                        if file_hash not in self.downloaded_hashes:
-                            new_filename = os.path.join(
-                                self.download_path, 
-                                f"tiktok_{video_data['id']}_{file_hash[:8]}.mp4"
-                            )
-                            os.rename(temp_filename, new_filename)
-                            
-                            self.downloaded_hashes[file_hash] = {
-                                'date': datetime.now().isoformat(),
-                                'video_id': video_data['id'],
-                                'author': video_data['author']['uniqueId'],
-                                'file_path': new_filename
-                            }
-                            self.save_hashes()
-                            
-                            total_downloaded += 1
-                            self.progress.emit(f"İndirilen: {new_filename}")
-                        else:
-                            if os.path.exists(temp_filename):
-                                os.remove(temp_filename)
-                            self.progress.emit(f"Tekrar eden video atlandı: {video_data['id']}")
-
-                except Exception as e:
-                    self.error.emit(f"Video işleme hatası: {str(e)}")
-                    logging.error(f"TikTok processing error: {str(e)}")
-                    continue
-
-                time.sleep(1)
-                    
-        except TooManyRequestsException as e:
-            logging.error(f"Rate limit exceeded: {str(e)}")
-            self.handle_rate_limit()
-        except Exception as e:
-            self.error.emit(f"Genel hata: {str(e)}")
-            logging.error(f"General TikTok error: {str(e)}")
-        finally:
-            self.finished.emit()
-
-    def handle_rate_limit(self):
-        delay = 60
-        max_retries = 5
-        for retry in range(max_retries):
-            if not self.is_running:
-                break
-            logging.info(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
-            self.progress.emit(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
-            time.sleep(delay)
-            delay *= 2
-
     def extract_video_id(self, url):
         parsed = urlparse(url)
         path = parsed.path
         video_id = path.split('/')[-1]
         return video_id
 
-class InstagramDownloadWorker(DownloadWorker):
-    def __init__(self, keyword, download_path, download_videos=True, download_photos=True):
-        super().__init__('Instagram', download_path)
-        self.keyword = keyword
-        self.download_videos = download_videos
-        self.download_photos = download_photos
-        self.session = None
-        
-        self.L = Instaloader(
-            download_videos=download_videos,
-            download_pictures=download_photos,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=False,
-            quiet=True,
-            max_connection_attempts=3
-        )
+    def run(self):
+        total_downloaded = 0  # Değişkeni metodun başında tanımla
+        try:
+            if not self.L.context.is_logged_in:
+                self.login_required.emit()
+                return
+    
+            self.progress.emit(f"'{self.keyword}' için arama yapılıyor...")
+            logging.info(f"Searching for '{self.keyword}' on Instagram")
+    
+            max_retries = 3
+            retry_delay = 5
+            posts = None
+            
+            for attempt in range(max_retries):
+                try:
+                    if self.keyword.startswith('#'):
+                        hashtag = self.keyword.lstrip('#')
+                        posts = list(self.L.get_hashtag_posts(hashtag))
+                        self.progress.emit(f"#{hashtag} hashtag'i için sonuçlar bulundu")
+                    else:
+                        try:
+                            profile = Profile.from_username(self.L.context, self.keyword)
+                            posts = list(profile.get_posts())
+                            self.progress.emit(f"Profil bulundu: {profile.username}")
+                        except Exception as profile_error:
+                            logging.warning(f"Profile search failed, trying as hashtag: {str(profile_error)}")
+                            posts = list(self.L.get_hashtag_posts(self.keyword))
+                            self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
+                    
+                    if posts:
+                        break
+                        
+                except TooManyRequestsException as e:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        self.progress.emit(f"Rate limit aşıldı. {wait_time} saniye bekleniyor...")
+                        time.sleep(wait_time)
+                    else:
+                        raise e
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (attempt + 1)
+                        self.progress.emit(f"Hata oluştu. Yeniden deneniyor... ({attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                    else:
+                        raise e
+    
+            if not posts:
+                self.error.emit("Gönderi bulunamadı!")
+                return
+    
+            for post in posts:
+                if not self.is_running:
+                    break
+                
+                try:
+                    is_video = post.is_video
+                    if (is_video and self.download_videos) or (not is_video and self.download_photos):
+                        self.progress.emit(f"İndiriliyor: {post.shortcode}")
+                        
+                        time.sleep(2)  # Rate limiting için bekleme
+                        
+                        try:
+                            self.L.download_post(post, target=self.download_path)
+                        except TooManyRequestsException:
+                            time.sleep(30)
+                            self.L.download_post(post, target=self.download_path)
+    
+                        file_pattern = f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S')}_{post.shortcode}"
+                        downloaded_files = [f for f in os.listdir(self.download_path) 
+                                         if f.startswith(file_pattern)]
+    
+                        for file_name in downloaded_files:
+                            file_path = os.path.join(self.download_path, file_name)
+                            try:
+                                file_hash = self.calculate_hash(file_path)
+    
+                                if file_hash not in self.downloaded_hashes:
+                                    new_name = f"instagram_{post.shortcode}_{file_hash[:8]}{os.path.splitext(file_name)[1]}"
+                                    new_path = os.path.join(self.download_path, new_name)
+                                    os.rename(file_path, new_path)
+    
+                                    self.downloaded_hashes[file_hash] = {
+                                        'date': datetime.now().isoformat(),
+                                        'shortcode': post.shortcode,
+                                        'type': 'video' if is_video else 'photo',
+                                        'file_path': new_path
+                                    }
+                                    
+                                    total_downloaded += 1
+                                    self.progress.emit(f"İndirilen: {new_name}")
+                                else:
+                                    os.remove(file_path)
+                                    self.progress.emit(f"Tekrar eden içerik atlandı: {post.shortcode}")
+    
+                                self.save_hashes()
+                                self.download_progress.emit(total_downloaded)
+    
+                            except Exception as hash_error:
+                                logging.error(f"Hash calculation error: {str(hash_error)}")
+                                continue
+                            
+                except Exception as post_error:
+                    self.error.emit(f"İçerik indirme hatası: {str(post_error)}")
+                    logging.error(f"Content download error: {str(post_error)}")
+                    time.sleep(5)
+                    continue
+                
+        except TooManyRequestsException as e:
+            self.error.emit("Rate limit aşıldı. Lütfen birkaç dakika bekleyin.")
+            logging.error(f"Rate limit exceeded: {str(e)}")
+            self.handle_rate_limit()
+        except LoginRequiredException as e:
+            self.error.emit("Oturum süresi doldu. Lütfen yeniden giriş yapın.")
+            logging.error(f"Login required: {str(e)}")
+            self.login_required.emit()
+        except Exception as e:
+            self.error.emit(f"Genel hata: {str(e)}")
+            logging.error(f"General error: {str(e)}")
+        finally:
+            if total_downloaded > 0:
+                self.progress.emit(f"Toplam {total_downloaded} içerik indirildi.")
+            self.finished.emit()
+class SocialMediaDownloader(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+        self.instagram_worker = None
+        self.tiktok_worker = None
+        self.load_settings()
 
     def initUI(self):
         self.setWindowTitle('Sosyal Medya İçerik İndirici')
@@ -512,14 +516,6 @@ class InstagramDownloadWorker(DownloadWorker):
         options_layout.addWidget(self.photo_checkbox)
         layout.addLayout(options_layout)
 
-        limit_layout = QHBoxLayout()
-        limit_layout.addWidget(QLabel('İndirme Limiti:'))
-        self.insta_limit_input = QLineEdit()
-        self.insta_limit_input.setPlaceholderText('Boş bırakın veya sayı girin')
-        self.insta_limit_input.setValidator(QIntValidator(1, 1000))
-        limit_layout.addWidget(self.insta_limit_input)
-        layout.addLayout(limit_layout)
-
         button_layout = QHBoxLayout()
         self.insta_download_button = QPushButton('İndirmeyi Başlat')
         self.insta_download_button.clicked.connect(self.start_instagram_download)
@@ -560,14 +556,6 @@ class InstagramDownloadWorker(DownloadWorker):
         search_layout.addWidget(self.tiktok_path_button)
         layout.addLayout(search_layout)
 
-        limit_layout = QHBoxLayout()
-        limit_layout.addWidget(QLabel('İndirme Limiti:'))
-        self.tiktok_limit_input = QLineEdit()
-        self.tiktok_limit_input.setPlaceholderText('Boş bırakın veya sayı girin')
-        self.tiktok_limit_input.setValidator(QIntValidator(1, 1000))
-        limit_layout.addWidget(self.tiktok_limit_input)
-        layout.addLayout(limit_layout)
-
         button_layout = QHBoxLayout()
         self.tiktok_download_button = QPushButton('İndirmeyi Başlat')
         self.tiktok_download_button.clicked.connect(self.start_tiktok_download)
@@ -594,7 +582,6 @@ class InstagramDownloadWorker(DownloadWorker):
                     self.instagram_download_path = settings.get('instagram_path', '')
                     self.tiktok_download_path = settings.get('tiktok_path', '')
             else:
-                # Varsayılan indirme dizinlerini ayarla
                 downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
                 self.instagram_download_path = os.path.join(downloads_dir, 'Instagram')
                 self.tiktok_download_path = os.path.join(downloads_dir, 'TikTok')
@@ -684,7 +671,7 @@ class InstagramDownloadWorker(DownloadWorker):
         try:
             credentials = {
                 'username': username,
-                'password': password  # Gerçek uygulamada şifrelenmeli!
+                'password': password
             }
             with open(f'{platform}_credentials.json', 'w') as f:
                 json.dump(credentials, f)
@@ -754,10 +741,11 @@ class InstagramDownloadWorker(DownloadWorker):
         self.log_message('tiktok', "İndirme tamamlandı!")
 
     def log_message(self, platform, message):
+        timestamp = datetime.now().strftime('%H:%M:%S')
         if platform == 'instagram':
-            self.insta_log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+            self.insta_log_text.append(f"[{timestamp}] {message}")
         else:
-            self.tiktok_log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+            self.tiktok_log_text.append(f"[{timestamp}] {message}")
 
     def update_progress(self, platform, value):
         if platform == 'instagram':
@@ -768,13 +756,10 @@ class InstagramDownloadWorker(DownloadWorker):
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-
-    app_icon = QIcon('icon.png')
-    app.setWindowIcon(app_icon)
-
+    
     window = SocialMediaDownloader()
     window.show()
-
+    
     sys.exit(app.exec_())
 
 if __name__ == '__main__':
