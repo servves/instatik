@@ -188,16 +188,16 @@ class InstagramDownloadWorker(DownloadWorker):
             posts = None
 
             try:
-                profile = self.L.check_profile_id(self.keyword)
+                profile = Profile.from_username(self.L.context, self.keyword)
                 posts = profile.get_posts()
                 self.progress.emit(f"Profil bulundu: {profile.username}")
-            except Exception:
+            except Exception as e1:
                 try:
                     posts = self.L.get_hashtag_posts(encoded_keyword)
                     self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
-                except Exception as e:
-                    self.error.emit(f"Arama hatası: {str(e)}")
-                    logging.error(f"Instagram search error: {str(e)}")
+                except Exception as e2:
+                    self.error.emit(f"Arama hatası: {str(e2)}")
+                    logging.error(f"Instagram search error: {str(e2)}")
                     return
 
             if not posts:
