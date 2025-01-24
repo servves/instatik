@@ -609,24 +609,22 @@ class SocialMediaDownloader(QMainWindow):
         if not keyword:
             self.show_error_message('Lütfen bir anahtar kelime girin.')
             return
-
+    
         os.makedirs(self.instagram_download_path, exist_ok=True)
-
+    
         self.insta_download_button.setEnabled(False)
         self.insta_stop_button.setEnabled(True)
         self.insta_search_input.setEnabled(False)
         self.insta_progress_bar.setValue(0)
         self.insta_log_text.clear()
-
+    
         self.instagram_worker = InstagramDownloadWorker(
             keyword,
             self.instagram_download_path,
             self.video_checkbox.isChecked(),
-            self.photo_checkbox.isChecked(),
-            download_limit=int(self.insta_limit_input.text()) if self.insta_limit_input.text() else None,
-            is_profile=self.profile_checkbox.isChecked()  # Profil indirme seçeneğini ekleyin
+            self.photo_checkbox.isChecked()
         )
-
+    
         self.instagram_worker.progress.connect(
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.download_progress.connect(
@@ -635,7 +633,7 @@ class SocialMediaDownloader(QMainWindow):
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.finished.connect(self.instagram_download_finished)
         self.instagram_worker.login_required.connect(self.show_instagram_login)
-
+    
         self.instagram_worker.start()
     def show_instagram_login(self):
         dialog = LoginDialog('Instagram', self)
