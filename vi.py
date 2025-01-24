@@ -4,95 +4,51 @@ import time
 import json
 import logging
 import random
+import requests
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import List, Dict
 from pathlib import Path
 
-# GUI için kütüphaneler
-from PyQt5.QtWidgets import *
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
+                            QProgressBar, QTextEdit, QFileDialog, QMessageBox,
+                            QCheckBox, QTabWidget, QFormLayout, QComboBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QIcon
-
-# Instagram kütüphaneleri
-from instaloader import Instaloader, Post, Profile, NodeIterator
-from instascrape import Profile as ScrapeProfile
-from instagram_private_api import Client, ClientCompatPatch
-
-# TikTok kütüphaneleri 
+from PyQt5.QtGui import QIcon, QIntValidator, QPalette
+from instaloader import Instaloader, Post, Profile
 from TikTokApi import TikTokApi
-
-# Çevre değişkenleri için
-from dotenv import load_dotenv
 
 # Logging ayarları
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('social_downloader.log'),
+        logging.FileHandler('downloader.log'),
         logging.StreamHandler()
     ]
 )
 
 class InstagramDownloader:
-    def __init__(self, username: str = None, password: str = None):
+    def __init__(self):
         self.L = Instaloader(
             download_videos=True,
             download_video_thumbnails=False,
             download_geotags=False,
             download_comments=False,
-            save_metadata=True,
-            compress_json=False,
+            save_metadata=False,
             post_metadata_txt_pattern='',
             max_connection_attempts=3
         )
         
-        # Proxy rotasyon sistemi
-        self.proxies = self._load_proxies()
-        self.current_proxy_index = 0
-        
-        if username and password:
-            try:
-                self.L.load_session_from_file(username)
-                logging.info("Loaded existing session")
-            except FileNotFoundError:
-                try:
-                    self.L.login(username, password)
-                    self.L.save_session_to_file(username)
-                    logging.info("Created new session")
-                except Exception as e:
-                    logging.error(f"Login failed: {str(e)}")
-                    raise
-
-        # Private API client
-        self.api = None
-        if username and password:
-            try:
-                self.api = Client(username, password)
-                logging.info("Private API client initialized")
-            except Exception as e:
-                logging.warning(f"Private API initialization failed: {str(e)}")
-
-    def _load_proxies(self) -> List[str]:
-        """Proxy listesini yükle"""
+    def login(self, username: str, password: str) -> bool:
         try:
-            with open('proxies.txt', 'r') as f:
-                return [line.strip() for line in f if line.strip()]
-        except FileNotFoundError:
-            return []
-
-    def _rotate_proxy(self):
-        """Proxy rotasyonu yap"""
-        if self.proxies:
-            self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
-            current_proxy = self.proxies[self.current_proxy_index]
-            self.L.context.session.proxies = {
-                'http': f'http://{current_proxy}',
-                'https': f'https://{current_proxy}'
-            }
+            self.L.login(username, password)
+            return True
+        except Exception as e:
+            logging.error(f"Instagram login error: {str(e)}")
+            return False
 
     def download_by_username(self, username: str, count: int = 10, download_path: str = None) -> List[str]:
-        """Kullanıcı gönderilerini indir"""
         downloaded_files = []
         try:
             profile = Profile.from_username(self.L.context, username)
@@ -103,11 +59,7 @@ class InstagramDownloader:
                     break
                     
                 try:
-                    # Rate limit kontrolü
                     time.sleep(random.uniform(2, 4))
-                    
-                    # Proxy rotasyonu
-                    self._rotate_proxy()
                     
                     if download_path:
                         self.L.download_post(post, target=download_path)
@@ -118,16 +70,15 @@ class InstagramDownloader:
                     logging.info(f"Downloaded post {post.shortcode}")
                     
                 except Exception as e:
-                    logging.error(f"Error downloading post {post.shortcode}: {str(e)}")
+                    logging.error(f"Error downloading post: {str(e)}")
                     continue
                     
         except Exception as e:
-            logging.error(f"Error fetching profile {username}: {str(e)}")
+            logging.error(f"Error fetching profile: {str(e)}")
             
         return downloaded_files
 
     def download_by_hashtag(self, hashtag: str, count: int = 10, download_path: str = None) -> List[str]:
-        """Hashtag gönderilerini indir"""
         downloaded_files = []
         try:
             posts = self.L.get_hashtag_posts(hashtag)
@@ -138,7 +89,6 @@ class InstagramDownloader:
                     
                 try:
                     time.sleep(random.uniform(2, 4))
-                    self._rotate_proxy()
                     
                     if download_path:
                         self.L.download_post(post, target=download_path)
@@ -153,7 +103,7 @@ class InstagramDownloader:
                     continue
                     
         except Exception as e:
-            logging.error(f"Error fetching hashtag {hashtag}: {str(e)}")
+            logging.error(f"Error fetching hashtag: {str(e)}")
             
         return downloaded_files
 
@@ -161,10 +111,8 @@ class TikTokDownloader:
     def __init__(self):
         self.api = TikTokApi()
         self.session = self._create_session()
-        self.device_id = self._generate_device_id()
         
     def _create_session(self):
-        """TikTok için özel session oluştur"""
         session = requests.Session()
         session.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -174,12 +122,7 @@ class TikTokDownloader:
         }
         return session
 
-    def _generate_device_id(self) -> str:
-        """Unique device ID oluştur"""
-        return ''.join(random.choices('0123456789', k=19))
-
     def download_by_username(self, username: str, count: int = 10, download_path: str = None) -> List[str]:
-        """Kullanıcı videolarını indir"""
         downloaded_files = []
         try:
             user_videos = self.api.user(username=username).videos(count=count)
@@ -210,12 +153,11 @@ class TikTokDownloader:
                     continue
                     
         except Exception as e:
-            logging.error(f"Error fetching TikTok user {username}: {str(e)}")
+            logging.error(f"Error fetching TikTok user: {str(e)}")
             
         return downloaded_files
 
     def download_by_hashtag(self, hashtag: str, count: int = 10, download_path: str = None) -> List[str]:
-        """Hashtag videolarını indir"""
         downloaded_files = []
         try:
             hashtag_videos = self.api.hashtag(name=hashtag).videos(count=count)
@@ -246,7 +188,7 @@ class TikTokDownloader:
                     continue
                     
         except Exception as e:
-            logging.error(f"Error fetching TikTok hashtag {hashtag}: {str(e)}")
+            logging.error(f"Error fetching TikTok hashtag: {str(e)}")
             
         return downloaded_files
 
@@ -269,10 +211,15 @@ class DownloadWorker(QThread):
     def run(self):
         try:
             if self.platform == "instagram":
-                downloader = InstagramDownloader(
-                    username=self.credentials.get('username'),
-                    password=self.credentials.get('password')
-                )
+                downloader = InstagramDownloader()
+                
+                if self.credentials:
+                    if not downloader.login(
+                        self.credentials.get('username'),
+                        self.credentials.get('password')
+                    ):
+                        self.error.emit("Instagram login failed")
+                        return
                 
                 if self.download_type == "username":
                     files = downloader.download_by_username(
@@ -283,7 +230,7 @@ class DownloadWorker(QThread):
                         self.query, self.count, self.download_path
                     )
                     
-            elif self.platform == "tiktok":
+            else:  # TikTok
                 downloader = TikTokDownloader()
                 
                 if self.download_type == "username":
@@ -302,7 +249,7 @@ class DownloadWorker(QThread):
             self.error.emit(str(e))
             logging.error(f"Download error: {str(e)}")
 
-class SocialMediaDownloader(QMainWindow):
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.init_ui()
@@ -310,15 +257,13 @@ class SocialMediaDownloader(QMainWindow):
         self.current_worker = None
 
     def init_ui(self):
-        # Ana UI kurulumu...
-        self.setWindowTitle('Sosyal Medya İndirici')
+        self.setWindowTitle('Sosyal Medya İçerik İndirici')
         self.setGeometry(100, 100, 800, 600)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
-        # Tab widget
         tabs = QTabWidget()
         tabs.addTab(self.create_instagram_tab(), "Instagram")
         tabs.addTab(self.create_tiktok_tab(), "TikTok")
@@ -328,7 +273,17 @@ class SocialMediaDownloader(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # Input alanları
+        # Giriş ayarları
+        login_group = QWidget()
+        login_layout = QFormLayout(login_group)
+        self.insta_username = QLineEdit()
+        self.insta_password = QLineEdit()
+        self.insta_password.setEchoMode(QLineEdit.Password)
+        login_layout.addRow("Kullanıcı Adı:", self.insta_username)
+        login_layout.addRow("Şifre:", self.insta_password)
+        layout.addWidget(login_group)
+
+        # İndirme ayarları
         form_layout = QFormLayout()
         self.insta_query = QLineEdit()
         self.insta_count = QLineEdit()
@@ -339,23 +294,26 @@ class SocialMediaDownloader(QMainWindow):
         form_layout.addRow("İndirilecek Sayı:", self.insta_count)
         layout.addLayout(form_layout)
 
-        # Seçenekler
+        # İndirme tipi
         self.insta_type = QComboBox()
         self.insta_type.addItems(["Kullanıcı", "Hashtag"])
         layout.addWidget(self.insta_type)
 
         # Butonlar
         button_layout = QHBoxLayout()
-        download_btn = QPushButton("İndir")
-        download_btn.clicked.connect(lambda: self.start_download("instagram"))
-        button_layout.addWidget(download_btn)
         
-        stop_btn = QPushButton("Durdur")
-        stop_btn.clicked.connect(self.stop_download)
-        button_layout.addWidget(stop_btn)
+        self.insta_download_btn = QPushButton("İndir")
+        self.insta_download_btn.clicked.connect(lambda: self.start_download("instagram"))
+        button_layout.addWidget(self.insta_download_btn)
+        
+        self.insta_stop_btn = QPushButton("Durdur")
+        self.insta_stop_btn.clicked.connect(self.stop_download)
+        self.insta_stop_btn.setEnabled(False)
+        button_layout.addWidget(self.insta_stop_btn)
+        
         layout.addLayout(button_layout)
 
-        # Progress
+        # İlerleme
         self.insta_progress = QTextEdit()
         self.insta_progress.setReadOnly(True)
         layout.addWidget(self.insta_progress)
@@ -363,49 +321,10 @@ class SocialMediaDownloader(QMainWindow):
         return tab
 
     def create_tiktok_tab(self):
-        # TikTok tab'ı için benzer yapı...
-        pass
-
-    def start_download(self, platform):
-        if self.current_worker and self.current_worker.isRunning():
-            return
-
-        query = self.insta_query.text().strip() if platform == "instagram" else self.tiktok_query.text().strip()
-        if not query:
-            QMessageBox.warning(self, "Hata", "Lütfen bir sorgu girin!")
-            return
-
-        try:
-            count = int(self.insta_count.text() if platform == "instagram" else self.tiktok_count.text())
-        except ValueError:
-            count = 10
-
-        download_type = "username" if self.insta_type.currentText() == "Kullanıcı" else "hashtag"
-        
-        self.current_worker = DownloadWorker(
-            platform=platform,
-            download_type=download_type,
-            query=query,
-            count=count,
-            download_path=self.get_download_path(platform),
-            credentials=self.get_credentials(platform)
-        )
-        
-        self.current_worker.progress.connect(self.update_progress)
-        self.current_worker.error.connect(self.show_error)
-        self.current_worker.finished.connect(self.download_finished)
-        self.current_worker.start()
-        
-        if platform == "instagram":
-            self.insta_progress.clear()
-        else:
-            self.tiktok_progress.clear()
-
-    def create_tiktok_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # Input alanları
+        # İndirme ayarları
         form_layout = QFormLayout()
         self.tiktok_query = QLineEdit()
         self.tiktok_count = QLineEdit()
@@ -416,59 +335,128 @@ class SocialMediaDownloader(QMainWindow):
         form_layout.addRow("İndirilecek Sayı:", self.tiktok_count)
         layout.addLayout(form_layout)
 
-        # Seçenekler
+        # İndirme tipi
         self.tiktok_type = QComboBox()
         self.tiktok_type.addItems(["Kullanıcı", "Hashtag"])
         layout.addWidget(self.tiktok_type)
 
         # Butonlar
         button_layout = QHBoxLayout()
-        download_btn = QPushButton("İndir")
-        download_btn.clicked.connect(lambda: self.start_download("tiktok"))
-        button_layout.addWidget(download_btn)
         
-        stop_btn = QPushButton("Durdur")
-        stop_btn.clicked.connect(self.stop_download)
-        button_layout.addWidget(stop_btn)
+        self.tiktok_download_btn = QPushButton("İndir")
+        self.tiktok_download_btn.clicked.connect(lambda: self.start_download("tiktok"))
+        button_layout.addWidget(self.tiktok_download_btn)
+        
+        self.tiktok_stop_btn = QPushButton("Durdur")
+        self.tiktok_stop_btn.clicked.connect(self.stop_download)
+        self.tiktok_stop_btn.setEnabled(False)
+        button_layout.addWidget(self.tiktok_stop_btn)
+        
         layout.addLayout(button_layout)
 
-        # Progress
+        # İlerleme
         self.tiktok_progress = QTextEdit()
         self.tiktok_progress.setReadOnly(True)
         layout.addWidget(self.tiktok_progress)
 
         return tab
 
+    def start_download(self, platform):
+        if self.current_worker and self.current_worker.isRunning():
+            return
+
+        # Input kontrolü
+        query = self.insta_query.text().strip() if platform == "instagram" else self.tiktok_query.text().strip()
+        if not query:
+            QMessageBox.warning(self, "Hata", "Lütfen bir sorgu girin!")
+            return
+
+        try:
+            count = int(self.insta_count.text() if platform == "instagram" else self.tiktok_count.text())
+        except ValueError:
+            count = 10
+
+        # İndirme tipini belirle
+        download_type = "username" if (
+            self.insta_type.currentText() == "Kullanıcı" if platform == "instagram" 
+            else self.tiktok_type.currentText() == "Kullanıcı"
+        ) else "hashtag"
+
+        # İndirme dizini oluştur
+        download_path = self.get_download_path(platform)
+        os.makedirs(download_path, exist_ok=True)
+
+        # Kimlik bilgileri
+        credentials = None
+        if platform == "instagram":
+            credentials = {
+                'username': self.insta_username.text().strip(),
+                'password': self.insta_password.text().strip()
+            }
+        
+        # İndirme worker'ını başlat
+        self.current_worker = DownloadWorker(
+            platform=platform,
+            download_type=download_type, 
+            query=query,
+            count=count,
+            download_path=download_path,
+            credentials=credentials
+        )
+        
+        # Worker sinyallerini bağla
+        self.current_worker.progress.connect(self.update_progress)
+        self.current_worker.error.connect(self.show_error)
+        self.current_worker.finished.connect(self.download_finished)
+        
+        # UI durumunu güncelle
+        if platform == "instagram":
+            self.insta_download_btn.setEnabled(False)
+            self.insta_stop_btn.setEnabled(True)
+            self.insta_progress.clear()
+        else:
+            self.tiktok_download_btn.setEnabled(False)
+            self.tiktok_stop_btn.setEnabled(True)
+            self.tiktok_progress.clear()
+            
+        # Worker'ı başlat
+        self.current_worker.start()
+
     def stop_download(self):
         if self.current_worker:
             self.current_worker.is_running = False
             self.current_worker.wait()
             self.current_worker = None
+            self.update_progress("İndirme durduruldu.")
 
     def update_progress(self, message):
         if self.current_worker.platform == "instagram":
-            self.insta_progress.append(message)
+            self.insta_progress.append(f"{datetime.now().strftime('%H:%M:%S')} - {message}")
         else:
-            self.tiktok_progress.append(message)
+            self.tiktok_progress.append(f"{datetime.now().strftime('%H:%M:%S')} - {message}")
 
     def show_error(self, message):
         QMessageBox.critical(self, "Hata", message)
+        self.download_finished()
 
     def download_finished(self):
-        platform = self.current_worker.platform
-        self.current_worker = None
-        QMessageBox.information(self, "Bilgi", f"{platform.capitalize()} indirme işlemi tamamlandı!")
+        if self.current_worker:
+            platform = self.current_worker.platform
+            self.current_worker = None
+            
+            if platform == "instagram":
+                self.insta_download_btn.setEnabled(True)
+                self.insta_stop_btn.setEnabled(False)
+            else:
+                self.tiktok_download_btn.setEnabled(True)
+                self.tiktok_stop_btn.setEnabled(False)
+                
+            self.update_progress("İndirme tamamlandı.")
 
     def get_download_path(self, platform):
         settings = self.load_settings()
         base_path = settings.get('download_path', os.path.expanduser('~/Downloads'))
-        platform_path = os.path.join(base_path, platform.capitalize())
-        os.makedirs(platform_path, exist_ok=True)
-        return platform_path
-
-    def get_credentials(self, platform):
-        settings = self.load_settings()
-        return settings.get(f'{platform}_credentials', {})
+        return os.path.join(base_path, platform.capitalize())
 
     def load_settings(self):
         try:
@@ -508,7 +496,7 @@ def main():
     palette.setColor(QPalette.HighlightedText, Qt.black)
     app.setPalette(palette)
     
-    window = SocialMediaDownloader()
+    window = MainWindow()
     window.show()
     
     sys.exit(app.exec_())
