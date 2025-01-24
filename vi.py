@@ -115,23 +115,23 @@ class DownloadWorker(QThread):
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
-    def __init__(self, keyword, download_path, download_videos=True, download_photos=True):
+    def __init__(self, keyword, download_path, download_videos=True, download_photos=True, search_as_profile=True):
         super().__init__('Instagram', download_path)
         self.keyword = keyword
         self.download_videos = download_videos
         self.download_photos = download_photos
-        self.session = requests.Session()
+        self.search_as_profile = search_as_profile
         
-        # Instagram'ın web API'si için headers
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'X-IG-App-ID': '936619743392459',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': 'https://www.instagram.com/',
-            'Origin': 'https://www.instagram.com',
-        }
+        self.L = Instaloader(
+            download_videos=download_videos,
+            download_pictures=download_photos,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+            quiet=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         
         self.L = Instaloader(
             download_videos=download_videos,
@@ -522,29 +522,29 @@ class SocialMediaDownloader(QMainWindow):
 
     def setup_instagram_tab(self):
         layout = QVBoxLayout(self.instagram_tab)
-
+    
         search_layout = QHBoxLayout()
         self.insta_search_input = QLineEdit()
         self.insta_search_input.setPlaceholderText('Kullanıcı adı veya hashtag girin...')
         search_layout.addWidget(self.insta_search_input)
-
+        
         self.insta_path_button = QPushButton('İndirme Dizini Seç')
         self.insta_path_button.clicked.connect(
             lambda: self.select_download_path('instagram'))
         search_layout.addWidget(self.insta_path_button)
-
+        
         layout.addLayout(search_layout)
-
+    
         options_layout = QHBoxLayout()
         self.video_checkbox = QCheckBox('Videoları İndir')
         self.photo_checkbox = QCheckBox('Fotoğrafları İndir')
         self.profile_checkbox = QCheckBox('Profil Olarak Ara')  # Yeni eklenen checkbox
         self.video_checkbox.setChecked(True)
         self.photo_checkbox.setChecked(True)
-        self.profile_checkbox.setChecked(True)  # Varsayılan olarak profil araması
+        self.profile_checkbox.setChecked(True)  # Varsayılan olarak işaretli
         options_layout.addWidget(self.video_checkbox)
         options_layout.addWidget(self.photo_checkbox)
-        options_layout.addWidget(self.profile_checkbox)  # Yeni checkbox'ı ekle
+        options_layout.addWidget(self.profile_checkbox)
         layout.addLayout(options_layout)
 
         limit_layout = QHBoxLayout()
