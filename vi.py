@@ -116,9 +116,6 @@ class DownloadWorker(QThread):
 import urllib.parse
 from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException, Hashtag
 
-import urllib.parse
-from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException, Hashtag
-
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
@@ -130,7 +127,7 @@ class InstagramDownloadWorker(DownloadWorker):
         self.download_limit = download_limit
         self.is_profile = is_profile
         self.username = None
-        
+
         self.L = Instaloader(
             download_videos=download_videos,
             download_pictures=download_photos,
@@ -147,14 +144,14 @@ class InstagramDownloadWorker(DownloadWorker):
             self.username = username
             self.L.context.log("Attempting login...")
             self.L.login(username, password)
-            
+
             if self.L.context.is_logged_in:
                 self.L.context.log("Login successful")
                 self.L.save_session_to_file(f"{username}_session")
                 return True
             else:
                 raise Exception("Login verification failed")
-                
+
         except Exception as e:
             self.error.emit(f"Giriş hatası: {str(e)}")
             logging.error(f"Instagram login error: {str(e)}")
@@ -163,12 +160,12 @@ class InstagramDownloadWorker(DownloadWorker):
     def handle_rate_limit(self):
         base_delay = 60
         max_retries = 3
-        
+
         for retry in range(max_retries):
             wait_time = base_delay * (2 ** retry)
             self.progress.emit(f"Rate limit aşıldı. {wait_time} saniye bekleniyor... ({retry + 1}/{max_retries})")
             time.sleep(wait_time)
-            
+
             try:
                 if self.L.context.is_logged_in:
                     return True
@@ -221,7 +218,7 @@ class InstagramDownloadWorker(DownloadWorker):
                 if self.download_limit is not None and total_downloaded >= self.download_limit:
                     self.progress.emit("İndirme limiti aşıldı.")
                     break
-                
+
                 try:
                     is_video = post.is_video
                     if (is_video and self.download_videos) or (not is_video and self.download_photos):
@@ -229,8 +226,8 @@ class InstagramDownloadWorker(DownloadWorker):
                         self.L.download_post(post, target=self.download_path)
 
                         file_pattern = f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S')}_{post.shortcode}"
-                        downloaded_files = [f for f in os.listdir(self.download_path) 
-                                         if f.startswith(file_pattern)]
+                        downloaded_files = [f for f in os.listdir(self.download_path)
+                                            if f.startswith(file_pattern)]
 
                         for file_name in downloaded_files:
                             file_path = os.path.join(self.download_path, file_name)
@@ -261,7 +258,7 @@ class InstagramDownloadWorker(DownloadWorker):
                     self.error.emit(f"İçerik indirme hatası: {str(e)}")
                     logging.error(f"Content download error: {str(e)}")
                     continue
-                
+
                 time.sleep(2)
 
         except TooManyRequestsException as e:
@@ -527,7 +524,6 @@ class SocialMediaDownloader(QMainWindow):
 
 
 
-
     def setup_tiktok_tab(self):
         layout = QVBoxLayout(self.tiktok_tab)
 
@@ -629,7 +625,8 @@ class SocialMediaDownloader(QMainWindow):
             self.instagram_download_path,
             self.video_checkbox.isChecked(),
             self.photo_checkbox.isChecked(),
-            self.profile_checkbox.isChecked()  # Yeni parametre ekleniyor
+            download_limit=int(self.insta_limit_input.text()) if self.insta_limit_input.text() else None,
+            is_profile=self.profile_checkbox.isChecked()  # Profil indirme seçeneğini ekleyin
         )
     
         self.instagram_worker.progress.connect(
