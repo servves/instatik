@@ -113,8 +113,6 @@ class DownloadWorker(QThread):
         self.is_running = False
 
 
-from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException, Hashtag
-
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
@@ -153,15 +151,12 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.info(f"Searching for '{self.keyword}' on Instagram")
 
             try:
-                # Try to find the profile first
-                profile = Profile.from_username(self.L.context, self.keyword)
+                profile = self.L.check_profile_id(self.keyword)
                 posts = profile.get_posts()
                 self.progress.emit(f"Profil bulundu: {profile.username}")
             except Exception:
-                # If not a profile, search as a hashtag
                 try:
-                    hashtag = Hashtag.from_name(self.L.context, self.keyword)
-                    posts = hashtag.get_posts()
+                    posts = self.L.get_hashtag_posts(self.keyword)
                     self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
                 except Exception as e:
                     self.error.emit(f"Arama hatası: {str(e)}")
