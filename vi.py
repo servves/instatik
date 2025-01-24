@@ -112,17 +112,23 @@ class DownloadWorker(QThread):
     def stop(self):
         self.is_running = False
 
+
 import urllib.parse
+from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException, Hashtag
+
+import urllib.parse
+from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException, Hashtag
 
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
-    def __init__(self, keyword, download_path, download_videos=True, download_photos=True, download_limit=None):
+    def __init__(self, keyword, download_path, download_videos=True, download_photos=True, download_limit=None, is_profile=False):
         super().__init__('Instagram', download_path)
         self.keyword = keyword
         self.download_videos = download_videos
         self.download_photos = download_photos
         self.download_limit = download_limit
+        self.is_profile = is_profile
         self.username = None
         
         self.L = Instaloader(
@@ -184,21 +190,21 @@ class InstagramDownloadWorker(DownloadWorker):
             self.progress.emit(f"'{self.keyword}' için arama yapılıyor...")
             logging.info(f"Searching for '{self.keyword}' on Instagram")
 
-            encoded_keyword = urllib.parse.quote(self.keyword)
             posts = None
 
             try:
-                profile = Profile.from_username(self.L.context, self.keyword)
-                posts = profile.get_posts()
-                self.progress.emit(f"Profil bulundu: {profile.username}")
-            except Exception as e1:
-                try:
-                    posts = self.L.get_hashtag_posts(encoded_keyword)
+                if self.is_profile:
+                    profile = Profile.from_username(self.L.context, self.keyword)
+                    posts = profile.get_posts()
+                    self.progress.emit(f"Profil bulundu: {profile.username}")
+                else:
+                    hashtag = Hashtag.from_name(self.L.context, self.keyword)
+                    posts = hashtag.get_posts()
                     self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
-                except Exception as e2:
-                    self.error.emit(f"Arama hatası: {str(e2)}")
-                    logging.error(f"Instagram search error: {str(e2)}")
-                    return
+            except Exception as e:
+                self.error.emit(f"Arama hatası: {str(e)}")
+                logging.error(f"Instagram search error: {str(e)}")
+                return
 
             if not posts:
                 self.error.emit(f"No posts found for '{self.keyword}'")
@@ -482,18 +488,19 @@ class SocialMediaDownloader(QMainWindow):
         options_layout = QHBoxLayout()
         self.video_checkbox = QCheckBox('Videoları İndir')
         self.photo_checkbox = QCheckBox('Fotoğrafları İndir')
+        self.profile_checkbox = QCheckBox('Profil İndir')  # Yeni Checkbox
         self.video_checkbox.setChecked(True)
         self.photo_checkbox.setChecked(True)
         options_layout.addWidget(self.video_checkbox)
         options_layout.addWidget(self.photo_checkbox)
+        options_layout.addWidget(self.profile_checkbox)  # Yeni Checkbox Ekleniyor
         layout.addLayout(options_layout)
 
-        # İndirme Limiti için yeni Layout
         limit_layout = QHBoxLayout()
         limit_layout.addWidget(QLabel('İndirme Limiti:'))
         self.insta_limit_input = QLineEdit()
         self.insta_limit_input.setPlaceholderText('Boş bırakın veya sayı girin')
-        self.insta_limit_input.setValidator(QIntValidator(1, 1000))  # Sadece sayılar için doğrulayıcı
+        self.insta_limit_input.setValidator(QIntValidator(1, 1000))
         limit_layout.addWidget(self.insta_limit_input)
         layout.addLayout(limit_layout)
 
@@ -517,6 +524,9 @@ class SocialMediaDownloader(QMainWindow):
 
         self.insta_login_status = QLabel('Giriş durumu: Giriş yapılmadı')
         layout.addWidget(self.insta_login_status)
+
+
+
 
     def setup_tiktok_tab(self):
         layout = QVBoxLayout(self.tiktok_tab)
@@ -614,16 +624,12 @@ class SocialMediaDownloader(QMainWindow):
         self.insta_progress_bar.setValue(0)
         self.insta_log_text.clear()
     
-        download_limit = None
-        if self.insta_limit_input.text().strip():
-            download_limit = int(self.insta_limit_input.text().strip())
-    
         self.instagram_worker = InstagramDownloadWorker(
             keyword,
             self.instagram_download_path,
             self.video_checkbox.isChecked(),
             self.photo_checkbox.isChecked(),
-            download_limit  # Yeni eklendi
+            self.profile_checkbox.isChecked()  # Yeni parametre ekleniyor
         )
     
         self.instagram_worker.progress.connect(
