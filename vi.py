@@ -112,6 +112,8 @@ class DownloadWorker(QThread):
     def stop(self):
         self.is_running = False
 
+import urllib.parse
+
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
@@ -120,7 +122,7 @@ class InstagramDownloadWorker(DownloadWorker):
         self.keyword = keyword
         self.download_videos = download_videos
         self.download_photos = download_photos
-        self.download_limit = download_limit  # Yeni eklendi
+        self.download_limit = download_limit
         self.username = None
         
         self.L = Instaloader(
@@ -182,13 +184,16 @@ class InstagramDownloadWorker(DownloadWorker):
             self.progress.emit(f"'{self.keyword}' için arama yapılıyor...")
             logging.info(f"Searching for '{self.keyword}' on Instagram")
 
+            encoded_keyword = urllib.parse.quote(self.keyword)
+            posts = None
+
             try:
                 profile = self.L.check_profile_id(self.keyword)
                 posts = profile.get_posts()
                 self.progress.emit(f"Profil bulundu: {profile.username}")
             except Exception:
                 try:
-                    posts = self.L.get_hashtag_posts(self.keyword)
+                    posts = self.L.get_hashtag_posts(encoded_keyword)
                     self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
                 except Exception as e:
                     self.error.emit(f"Arama hatası: {str(e)}")
@@ -200,7 +205,7 @@ class InstagramDownloadWorker(DownloadWorker):
                 logging.error(f"No posts found for '{self.keyword}'")
                 return
 
-            total_downloaded = 0  # Initialize total_downloaded
+            total_downloaded = 0
 
             for post in posts:
                 if not self.is_running:
@@ -512,7 +517,7 @@ class SocialMediaDownloader(QMainWindow):
 
         self.insta_login_status = QLabel('Giriş durumu: Giriş yapılmadı')
         layout.addWidget(self.insta_login_status)
-    
+
     def setup_tiktok_tab(self):
         layout = QVBoxLayout(self.tiktok_tab)
 
@@ -600,19 +605,19 @@ class SocialMediaDownloader(QMainWindow):
         if not keyword:
             self.show_error_message('Lütfen bir anahtar kelime girin.')
             return
-
+    
         os.makedirs(self.instagram_download_path, exist_ok=True)
-
+    
         self.insta_download_button.setEnabled(False)
         self.insta_stop_button.setEnabled(True)
         self.insta_search_input.setEnabled(False)
         self.insta_progress_bar.setValue(0)
         self.insta_log_text.clear()
-
+    
         download_limit = None
         if self.insta_limit_input.text().strip():
             download_limit = int(self.insta_limit_input.text().strip())
-
+    
         self.instagram_worker = InstagramDownloadWorker(
             keyword,
             self.instagram_download_path,
@@ -620,7 +625,7 @@ class SocialMediaDownloader(QMainWindow):
             self.photo_checkbox.isChecked(),
             download_limit  # Yeni eklendi
         )
-
+    
         self.instagram_worker.progress.connect(
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.download_progress.connect(
@@ -629,7 +634,7 @@ class SocialMediaDownloader(QMainWindow):
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.finished.connect(self.instagram_download_finished)
         self.instagram_worker.login_required.connect(self.show_instagram_login)
-
+    
         self.instagram_worker.start()
     def show_instagram_login(self):
         dialog = LoginDialog('Instagram', self)
