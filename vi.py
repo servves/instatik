@@ -115,11 +115,12 @@ class DownloadWorker(QThread):
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
-    def __init__(self, keyword, download_path, download_videos=True, download_photos=True):
+    def __init__(self, keyword, download_path, download_videos=True, download_photos=True, download_limit=None):
         super().__init__('Instagram', download_path)
         self.keyword = keyword
         self.download_videos = download_videos
         self.download_photos = download_photos
+        self.download_limit = download_limit  # Yeni eklendi
         self.username = None
         
         self.L = Instaloader(
@@ -177,10 +178,10 @@ class InstagramDownloadWorker(DownloadWorker):
             if not self.L.context.is_logged_in:
                 self.login_required.emit()
                 return
-    
+
             self.progress.emit(f"'{self.keyword}' için arama yapılıyor...")
             logging.info(f"Searching for '{self.keyword}' on Instagram")
-    
+
             try:
                 profile = self.L.check_profile_id(self.keyword)
                 posts = profile.get_posts()
@@ -193,11 +194,21 @@ class InstagramDownloadWorker(DownloadWorker):
                     self.error.emit(f"Arama hatası: {str(e)}")
                     logging.error(f"Instagram search error: {str(e)}")
                     return
-    
+
+            if not posts:
+                self.error.emit(f"No posts found for '{self.keyword}'")
+                logging.error(f"No posts found for '{self.keyword}'")
+                return
+
             total_downloaded = 0  # Initialize total_downloaded
-    
+
             for post in posts:
                 if not self.is_running:
+                    break
+
+                # İndirme limitini kontrol et
+                if self.download_limit is not None and total_downloaded >= self.download_limit:
+                    self.progress.emit("İndirme limiti aşıldı.")
                     break
                 
                 try:
@@ -205,43 +216,43 @@ class InstagramDownloadWorker(DownloadWorker):
                     if (is_video and self.download_videos) or (not is_video and self.download_photos):
                         self.progress.emit(f"İndiriliyor: {post.shortcode}")
                         self.L.download_post(post, target=self.download_path)
-    
+
                         file_pattern = f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S')}_{post.shortcode}"
                         downloaded_files = [f for f in os.listdir(self.download_path) 
                                          if f.startswith(file_pattern)]
-    
+
                         for file_name in downloaded_files:
                             file_path = os.path.join(self.download_path, file_name)
                             file_hash = self.calculate_hash(file_path)
-    
+
                             if file_hash not in self.downloaded_hashes:
                                 new_name = f"instagram_{post.shortcode}_{file_hash[:8]}{os.path.splitext(file_name)[1]}"
                                 new_path = os.path.join(self.download_path, new_name)
                                 os.rename(file_path, new_path)
-    
+
                                 self.downloaded_hashes[file_hash] = {
                                     'date': datetime.now().isoformat(),
                                     'shortcode': post.shortcode,
                                     'type': 'video' if is_video else 'photo',
                                     'file_path': new_path
                                 }
-                                
+
                                 total_downloaded += 1
                                 self.progress.emit(f"İndirilen: {new_name}")
                             else:
                                 os.remove(file_path)
                                 self.progress.emit(f"Tekrar eden içerik atlandı: {post.shortcode}")
-    
+
                         self.save_hashes()
                         self.download_progress.emit(total_downloaded)
-    
+
                 except Exception as e:
                     self.error.emit(f"İçerik indirme hatası: {str(e)}")
                     logging.error(f"Content download error: {str(e)}")
                     continue
                 
                 time.sleep(2)
-    
+
         except TooManyRequestsException as e:
             logging.error(f"Rate limit exceeded: {str(e)}")
             self.handle_rate_limit()
@@ -253,7 +264,6 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.error(f"General error: {str(e)}")
         finally:
             self.finished.emit()
-    
 class TikTokDownloadWorker(DownloadWorker):
     def __init__(self, keyword_or_url, download_path, download_type="keyword"):
         super().__init__('TikTok', download_path)
@@ -456,12 +466,12 @@ class SocialMediaDownloader(QMainWindow):
         self.insta_search_input = QLineEdit()
         self.insta_search_input.setPlaceholderText('Kullanıcı adı veya hashtag girin...')
         search_layout.addWidget(self.insta_search_input)
-        
+
         self.insta_path_button = QPushButton('İndirme Dizini Seç')
         self.insta_path_button.clicked.connect(
             lambda: self.select_download_path('instagram'))
         search_layout.addWidget(self.insta_path_button)
-        
+
         layout.addLayout(search_layout)
 
         options_layout = QHBoxLayout()
@@ -472,6 +482,15 @@ class SocialMediaDownloader(QMainWindow):
         options_layout.addWidget(self.video_checkbox)
         options_layout.addWidget(self.photo_checkbox)
         layout.addLayout(options_layout)
+
+        # İndirme Limiti için yeni Layout
+        limit_layout = QHBoxLayout()
+        limit_layout.addWidget(QLabel('İndirme Limiti:'))
+        self.insta_limit_input = QLineEdit()
+        self.insta_limit_input.setPlaceholderText('Boş bırakın veya sayı girin')
+        self.insta_limit_input.setValidator(QIntValidator(1, 1000))  # Sadece sayılar için doğrulayıcı
+        limit_layout.addWidget(self.insta_limit_input)
+        layout.addLayout(limit_layout)
 
         button_layout = QHBoxLayout()
         self.insta_download_button = QPushButton('İndirmeyi Başlat')
@@ -493,7 +512,7 @@ class SocialMediaDownloader(QMainWindow):
 
         self.insta_login_status = QLabel('Giriş durumu: Giriş yapılmadı')
         layout.addWidget(self.insta_login_status)
-
+    
     def setup_tiktok_tab(self):
         layout = QVBoxLayout(self.tiktok_tab)
 
@@ -590,11 +609,16 @@ class SocialMediaDownloader(QMainWindow):
         self.insta_progress_bar.setValue(0)
         self.insta_log_text.clear()
 
+        download_limit = None
+        if self.insta_limit_input.text().strip():
+            download_limit = int(self.insta_limit_input.text().strip())
+
         self.instagram_worker = InstagramDownloadWorker(
             keyword,
             self.instagram_download_path,
             self.video_checkbox.isChecked(),
-            self.photo_checkbox.isChecked()
+            self.photo_checkbox.isChecked(),
+            download_limit  # Yeni eklendi
         )
 
         self.instagram_worker.progress.connect(
@@ -607,7 +631,6 @@ class SocialMediaDownloader(QMainWindow):
         self.instagram_worker.login_required.connect(self.show_instagram_login)
 
         self.instagram_worker.start()
-
     def show_instagram_login(self):
         dialog = LoginDialog('Instagram', self)
         if dialog.exec_() == QDialog.Accepted:
