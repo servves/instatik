@@ -3,7 +3,6 @@ import os
 import hashlib
 import json
 import time
-import logging
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
@@ -11,10 +10,11 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QCheckBox, QTabWidget, QDialog)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QIntValidator
-from instaloader import Instaloader, Profile, LoginRequiredException, TooManyRequestsException
+from instaloader import Instaloader, Profile, Post, LoginRequiredException, TooManyRequestsException
 import requests
 from urllib.parse import urlparse
 from TikTokApi import TikTokApi
+import logging
 
 # Logging ayarları
 logging.basicConfig(
@@ -115,13 +115,24 @@ class DownloadWorker(QThread):
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
-    def __init__(self, keyword, download_path, download_videos=True, download_photos=True):
+    def __init__(self, keyword, download_path, download_videos=True, download_photos=True, search_as_profile=True):
         super().__init__('Instagram', download_path)
         self.keyword = keyword
         self.download_videos = download_videos
         self.download_photos = download_photos
+        self.search_as_profile = search_as_profile
         
-        # Güncellenmiş Instaloader konfigürasyonu
+        # Instagram'ın yeni API yapısı için güncellenmiş headers
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'X-IG-App-ID': '936619743392459',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://www.instagram.com/',
+            'Origin': 'https://www.instagram.com',
+        }
+        
         self.L = Instaloader(
             download_videos=download_videos,
             download_pictures=download_photos,
@@ -129,32 +140,52 @@ class InstagramDownloadWorker(DownloadWorker):
             download_geotags=False,
             download_comments=False,
             save_metadata=False,
-            quiet=True,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            max_connection_attempts=3
+            quiet=True
         )
 
     def set_login_credentials(self, username, password):
+        """Instagram hesabına giriş yapmak için kullanılan metod"""
         try:
             # Önce mevcut oturumu kontrol et
             session_file = f"{username}_instagram_session"
             try:
                 self.L.load_session_from_file(username, session_file)
-                logging.info("Existing session loaded successfully")
+                logging.info(f"Existing session loaded for {username}")
                 return True
             except FileNotFoundError:
-                # Oturum bulunamazsa yeni giriş yap
-                self.L.login(username, password)
-                # Başarılı girişi kaydet
-                self.L.save_session_to_file(session_file)
-                return True
+                pass
+            
+            # Oturum yoksa yeni giriş yap
+            self.L.login(username, password)
+            
+            # Başarılı girişi kaydet
+            self.L.save_session_to_file(session_file)
+            
+            logging.info(f"Successfully logged in as {username}")
+            return True
+            
         except Exception as e:
-            self.error.emit(f"Giriş hatası: {str(e)}")
-            logging.error(f"Instagram login error: {str(e)}")
+            error_msg = f"Login failed: {str(e)}"
+            self.error.emit(error_msg)
+            logging.error(error_msg)
             return False
 
+    def handle_rate_limit(self):
+        """Rate limit durumunda bekletme işlemi yapan metod"""
+        delay = 60
+        max_retries = 3
+        for retry in range(max_retries):
+            if not self.is_running:
+                break
+            self.progress.emit(f"Rate limit aşıldı, {delay} saniye bekleniyor... (Deneme {retry+1}/{max_retries})")
+            time.sleep(delay)
+            delay *= 2
+
     def run(self):
+        """Ana çalışma metodu"""
         total_downloaded = 0
+        session = requests.Session()
+        
         try:
             if not self.L.context.is_logged_in:
                 self.login_required.emit()
@@ -164,30 +195,64 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.info(f"Searching for '{self.keyword}' on Instagram")
 
             try:
-                # Profil araması
-                try:
-                    # Profile.from_username yerine doğrudan Profile sınıfını kullan
-                    profile = Profile.from_username(self.L.context, self.keyword.replace(" ", ""))
-                    self.progress.emit(f"Profil bulundu: {profile.username}")
-                    posts = profile.get_posts()
-                except Exception as profile_error:
-                    logging.warning(f"Profile search failed: {str(profile_error)}")
-                    
-                    # Hashtag araması
+                if self.search_as_profile:
+                    # Profil araması
                     try:
-                        # Hashtag araması için boşlukları kaldır
-                        clean_keyword = self.keyword.replace(" ", "")
-                        posts = self.L.get_hashtag_posts(clean_keyword)
-                        self.progress.emit(f"#{clean_keyword} hashtag'i için sonuçlar bulundu")
-                    except Exception as hashtag_error:
-                        error_msg = f"Hem profil hem de hashtag araması başarısız oldu: {str(hashtag_error)}"
-                        self.error.emit(error_msg)
-                        logging.error(error_msg)
+                        clean_keyword = self.keyword.replace(" ", "").lower()
+                        profile = Profile.from_username(self.L.context, clean_keyword)
+                        posts = profile.get_posts()
+                        self.progress.emit(f"Profil bulundu: {profile.username}")
+                    except Exception as profile_error:
+                        self.error.emit(f"Profil bulunamadı: {str(profile_error)}")
+                        logging.error(f"Profile search error: {str(profile_error)}")
+                        return
+                else:
+                    # Hashtag/Keyword araması
+                    try:
+                        clean_keyword = self.keyword.replace(" ", "").lower()
+                        search_url = 'https://www.instagram.com/api/v1/web/search/topsearch/'
+                        
+                        # Session headers'ını güncelle
+                        session.headers.update(self.headers)
+                        session.cookies.update(self.L.context.session.cookies)
+
+                        # Arama parametreleri
+                        params = {
+                            'context': 'blended',
+                            'query': clean_keyword,
+                            'search_surface': 'web_top_search'
+                        }
+
+                        # Aramayı gerçekleştir
+                        response = session.get(search_url, params=params)
+                        response.raise_for_status()
+                        search_data = response.json()
+
+                        posts = []
+                        if 'hashtags' in search_data:
+                            for hashtag in search_data['hashtags']:
+                                try:
+                                    hashtag_name = hashtag['hashtag']['name']
+                                    hashtag_posts = self.L.get_hashtag_posts(hashtag_name)
+                                    self.progress.emit(f"#{hashtag_name} için görseller bulundu")
+                                    posts.extend(list(hashtag_posts))
+                                except Exception as e:
+                                    logging.warning(f"Hashtag fetch error for {hashtag_name}: {str(e)}")
+                                    continue
+
+                        if not posts:
+                            self.error.emit("Sonuç bulunamadı")
+                            return
+
+                    except Exception as search_error:
+                        self.error.emit(f"Arama hatası: {str(search_error)}")
+                        logging.error(f"Search error: {str(search_error)}")
                         return
 
                 # Post indirme işlemi
                 for post in posts:
                     if not self.is_running:
+                        self.progress.emit("İndirme kullanıcı tarafından durduruldu")
                         break
 
                     try:
@@ -195,13 +260,14 @@ class InstagramDownloadWorker(DownloadWorker):
                         if (is_video and self.download_videos) or (not is_video and self.download_photos):
                             self.progress.emit(f"İndiriliyor: {post.shortcode}")
                             
-                            # İndirme dizinini oluştur
                             os.makedirs(self.download_path, exist_ok=True)
                             
-                            # Postu indir
-                            self.L.download_post(post, target=self.download_path)
+                            try:
+                                self.L.download_post(post, target=self.download_path)
+                            except Exception as download_error:
+                                logging.error(f"Post download error: {str(download_error)}")
+                                continue
 
-                            # Dosya işlemleri
                             file_pattern = f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S')}_{post.shortcode}"
                             downloaded_files = [f for f in os.listdir(self.download_path) 
                                              if f.startswith(file_pattern)]
@@ -213,7 +279,12 @@ class InstagramDownloadWorker(DownloadWorker):
                                 if file_hash not in self.downloaded_hashes:
                                     new_name = f"instagram_{post.shortcode}_{file_hash[:8]}{os.path.splitext(file_name)[1]}"
                                     new_path = os.path.join(self.download_path, new_name)
-                                    os.rename(file_path, new_path)
+                                    
+                                    try:
+                                        os.rename(file_path, new_path)
+                                    except OSError as e:
+                                        logging.error(f"File rename error: {str(e)}")
+                                        continue
 
                                     self.downloaded_hashes[file_hash] = {
                                         'date': datetime.now().isoformat(),
@@ -225,35 +296,41 @@ class InstagramDownloadWorker(DownloadWorker):
                                     total_downloaded += 1
                                     self.progress.emit(f"İndirilen: {new_name}")
                                 else:
-                                    os.remove(file_path)
+                                    try:
+                                        os.remove(file_path)
+                                    except OSError as e:
+                                        logging.error(f"File delete error: {str(e)}")
                                     self.progress.emit(f"Tekrar eden içerik atlandı: {post.shortcode}")
 
                             self.save_hashes()
                             self.download_progress.emit(total_downloaded)
 
-                            # Rate limiting'i önlemek için bekleme
-                            time.sleep(3)
+                            time.sleep(3)  # Rate limiting önlemi
 
-                    except Exception as e:
-                        self.error.emit(f"İçerik indirme hatası: {str(e)}")
-                        logging.error(f"Content download error: {str(e)}")
+                    except Exception as post_error:
+                        self.error.emit(f"İçerik indirme hatası: {str(post_error)}")
+                        logging.error(f"Post processing error: {str(post_error)}")
                         continue
 
-            except TooManyRequestsException as e:
-                logging.error(f"Rate limit exceeded: {str(e)}")
+            except TooManyRequestsException as rate_error:
+                logging.error(f"Rate limit exceeded: {str(rate_error)}")
                 self.handle_rate_limit()
-            
-        except LoginRequiredException as e:
-            logging.error(f"Login required: {str(e)}")
+                
+        except LoginRequiredException as login_error:
+            logging.error(f"Login required: {str(login_error)}")
             self.login_required.emit()
-        except Exception as e:
-            self.error.emit(f"Genel hata: {str(e)}")
-            logging.error(f"General error: {str(e)}")
+        except Exception as general_error:
+            self.error.emit(f"Genel hata: {str(general_error)}")
+            logging.error(f"General error: {str(general_error)}")
         finally:
+            session.close()
+            
             if total_downloaded > 0:
                 self.progress.emit(f"Toplam {total_downloaded} içerik indirildi")
+            else:
+                self.progress.emit("İndirilen içerik bulunamadı")
+                
             self.finished.emit()
-
     def handle_rate_limit(self):
         delay = 60
         max_retries = 3
@@ -478,12 +555,13 @@ class SocialMediaDownloader(QMainWindow):
         options_layout = QHBoxLayout()
         self.video_checkbox = QCheckBox('Videoları İndir')
         self.photo_checkbox = QCheckBox('Fotoğrafları İndir')
-        self.profile_checkbox = QCheckBox('Profil İndir')  # Yeni Checkbox
+        self.profile_checkbox = QCheckBox('Profil Olarak Ara')  # Yeni eklenen checkbox
         self.video_checkbox.setChecked(True)
         self.photo_checkbox.setChecked(True)
+        self.profile_checkbox.setChecked(True)  # Varsayılan olarak profil araması
         options_layout.addWidget(self.video_checkbox)
         options_layout.addWidget(self.photo_checkbox)
-        options_layout.addWidget(self.profile_checkbox)  # Yeni Checkbox Ekleniyor
+        options_layout.addWidget(self.profile_checkbox)  # Yeni checkbox'ı ekle
         layout.addLayout(options_layout)
 
         limit_layout = QHBoxLayout()
@@ -635,22 +713,23 @@ class SocialMediaDownloader(QMainWindow):
         if not keyword:
             self.show_error_message('Lütfen bir anahtar kelime girin.')
             return
-    
+
         os.makedirs(self.instagram_download_path, exist_ok=True)
-    
+
         self.insta_download_button.setEnabled(False)
         self.insta_stop_button.setEnabled(True)
         self.insta_search_input.setEnabled(False)
         self.insta_progress_bar.setValue(0)
         self.insta_log_text.clear()
-    
+
         self.instagram_worker = InstagramDownloadWorker(
             keyword,
             self.instagram_download_path,
             self.video_checkbox.isChecked(),
-            self.photo_checkbox.isChecked()
+            self.photo_checkbox.isChecked(),
+            self.profile_checkbox.isChecked()  # Yeni parametre
         )
-    
+
         self.instagram_worker.progress.connect(
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.download_progress.connect(
@@ -659,15 +738,22 @@ class SocialMediaDownloader(QMainWindow):
             lambda msg: self.log_message('instagram', msg))
         self.instagram_worker.finished.connect(self.instagram_download_finished)
         self.instagram_worker.login_required.connect(self.show_instagram_login)
-    
+
         self.instagram_worker.start()
     def show_instagram_login(self):
         dialog = LoginDialog('Instagram', self)
         if dialog.exec_() == QDialog.Accepted:
-            username = dialog.username.text()
-            password = dialog.password.text()
+            username = dialog.username.text().strip()
+            password = dialog.password.text().strip()
             remember = dialog.remember_me.isChecked()
-
+    
+            if not username or not password:
+                self.show_error_message('Kullanıcı adı ve şifre boş olamaz!')
+                self.instagram_download_finished()
+                return
+    
+            self.log_message('instagram', f"Instagram'a giriş yapılıyor: {username}")
+            
             if self.instagram_worker.set_login_credentials(username, password):
                 self.insta_login_status.setText(f'Giriş durumu: {username} olarak giriş yapıldı')
                 if remember:
@@ -676,7 +762,6 @@ class SocialMediaDownloader(QMainWindow):
             else:
                 self.instagram_download_finished()
                 self.show_error_message('Instagram girişi başarısız!')
-
     def save_credentials(self, platform, username, password):
         try:
             credentials = {
