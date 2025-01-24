@@ -112,7 +112,6 @@ class DownloadWorker(QThread):
     def stop(self):
         self.is_running = False
 
-
 class InstagramDownloadWorker(DownloadWorker):
     login_required = pyqtSignal()
 
@@ -141,18 +140,6 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.error(f"Instagram login error: {str(e)}")
             return False
 
-    def search_with_new_endpoint(self, keyword):
-        url = f"https://www.instagram.com/explore/search/keyword/?q={keyword}"
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
-            return data
-        except requests.RequestException as e:
-            self.error.emit(f"Yeni endpoint ile arama hatası: {str(e)}")
-            logging.error(f"Instagram new endpoint search error: {str(e)}")
-            return None
-
     def run(self):
         try:
             if not self.L.context.is_logged_in:
@@ -163,75 +150,88 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.info(f"Searching for '{self.keyword}' on Instagram")
 
             try:
-                profile = self.L.check_profile_id(self.keyword)
-                posts = profile.get_posts()
-                self.progress.emit(f"Profil bulundu: {profile.username}")
-            except Exception:
+                # First try to find as username
+                profile = None
                 try:
-                    posts = self.L.get_hashtag_posts(self.keyword)
-                    self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
-                except Exception:
-                    search_results = self.search_with_new_endpoint(self.keyword)
-                    if search_results:
-                        posts = self.L.get_hashtag_posts(self.keyword)
-                        self.progress.emit(f"Yeni endpoint ile arama sonuçları bulundu")
-                    else:
-                        self.error.emit(f"Arama hatası: Yeni endpoint ile arama başarısız")
-                        logging.error(f"Instagram search error: New endpoint search failed")
-                        return
-
-            total_downloaded = 0
-            for post in posts:
-                if not self.is_running:
-                    break
-
-                try:
-                    is_video = post.is_video
-                    if (is_video and self.download_videos) or (not is_video and self.download_photos):
-                        self.progress.emit(f"İndiriliyor: {post.shortcode}")
-                        self.L.download_post(post, target=self.download_path)
-
-                        file_pattern = f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S')}_{post.shortcode}"
-                        downloaded_files = [f for f in os.listdir(self.download_path) 
-                                         if f.startswith(file_pattern)]
-
-                        for file_name in downloaded_files:
-                            file_path = os.path.join(self.download_path, file_name)
-                            file_hash = self.calculate_hash(file_path)
-
-                            if file_hash not in self.downloaded_hashes:
-                                new_name = f"instagram_{post.shortcode}_{file_hash[:8]}{os.path.splitext(file_name)[1]}"
-                                new_path = os.path.join(self.download_path, new_name)
-                                os.rename(file_path, new_path)
-
-                                self.downloaded_hashes[file_hash] = {
-                                    'date': datetime.now().isoformat(),
-                                    'shortcode': post.shortcode,
-                                    'type': 'video' if is_video else 'photo',
-                                    'file_path': new_path
-                                }
-                                
-                                total_downloaded += 1
-                                self.progress.emit(f"İndirilen: {new_name}")
-                            else:
-                                os.remove(file_path)
-                                self.progress.emit(f"Tekrar eden içerik atlandı: {post.shortcode}")
-
-                        self.save_hashes()
-                        self.download_progress.emit(total_downloaded)
-
+                    profile = Profile.from_username(self.L.context, self.keyword)
+                    self.progress.emit(f"Profil bulundu: {profile.username}")
+                    posts = profile.get_posts()
                 except Exception as e:
-                    self.error.emit(f"İçerik indirme hatası: {str(e)}")
-                    logging.error(f"Content download error: {str(e)}")
-                    continue
+                    logging.info(f"Profile search failed: {str(e)}, trying hashtag")
+                    
+                    # If username fails, try as hashtag (remove spaces and #)
+                    hashtag = self.keyword.replace(" ", "").replace("#", "")
+                    try:
+                        posts = self.L.get_hashtag_posts(hashtag)
+                        self.progress.emit(f"#{hashtag} hashtag'i için sonuçlar bulundu")
+                    except Exception as hashtag_error:
+                        raise Exception(f"Profil ve hashtag araması başarısız: {str(hashtag_error)}")
 
-                time.sleep(2)
+                total_downloaded = 0
+                for post in posts:
+                    if not self.is_running:
+                        break
 
-        except TooManyRequestsException as e:
-            logging.error(f"Rate limit exceeded: {str(e)}")
+                    try:
+                        is_video = post.is_video
+                        if (is_video and self.download_videos) or (not is_video and self.download_photos):
+                            self.progress.emit(f"İndiriliyor: {post.shortcode}")
+                            
+                            # Create a timestamp-based filename
+                            timestamp = post.date_local.strftime('%Y%m%d_%H%M%S')
+                            base_filename = f"instagram_{timestamp}_{post.shortcode}"
+                            
+                            # Download the post
+                            self.L.download_post(post, target=self.download_path)
+                            
+                            # Find downloaded files and process them
+                            for filename in os.listdir(self.download_path):
+                                if post.shortcode in filename:
+                                    file_path = os.path.join(self.download_path, filename)
+                                    file_hash = self.calculate_hash(file_path)
+                                    
+                                    if file_hash not in self.downloaded_hashes:
+                                        # Rename with proper extension
+                                        ext = '.mp4' if is_video else '.jpg'
+                                        new_name = f"{base_filename}_{file_hash[:8]}{ext}"
+                                        new_path = os.path.join(self.download_path, new_name)
+                                        
+                                        if os.path.exists(file_path):
+                                            os.rename(file_path, new_path)
+                                            
+                                            self.downloaded_hashes[file_hash] = {
+                                                'date': datetime.now().isoformat(),
+                                                'shortcode': post.shortcode,
+                                                'type': 'video' if is_video else 'photo',
+                                                'file_path': new_path
+                                            }
+                                            
+                                            total_downloaded += 1
+                                            self.progress.emit(f"İndirilen: {new_name}")
+                                            self.download_progress.emit(total_downloaded)
+                                    else:
+                                        if os.path.exists(file_path):
+                                            os.remove(file_path)
+                                            self.progress.emit(f"Tekrar eden içerik atlandı: {post.shortcode}")
+
+                            self.save_hashes()
+
+                    except Exception as e:
+                        self.error.emit(f"İçerik indirme hatası: {str(e)}")
+                        logging.error(f"Content download error: {str(e)}")
+                        continue
+
+                    # Rate limiting
+                    time.sleep(2)
+
+            except Exception as e:
+                self.error.emit(f"Arama hatası: {str(e)}")
+                logging.error(f"Search error: {str(e)}")
+                return
+
+        except TooManyRequestsException:
             self.handle_rate_limit()
-        except LoginRequiredException as e:
-            logging.error(f"Login required: {str(e)}")
+        except LoginRequiredException:
             self.login_required.emit()
         except Exception as e:
             self.error.emit(f"Genel hata: {str(e)}")
@@ -245,8 +245,7 @@ class InstagramDownloadWorker(DownloadWorker):
         for retry in range(max_retries):
             if not self.is_running:
                 break
-            logging.info(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
-            self.progress.emit(f"Rate limited, retrying in {delay} seconds... (Attempt {retry+1}/{max_retries})")
+            self.progress.emit(f"Rate limit aşıldı, {delay} saniye bekleniyor... (Deneme {retry+1}/{max_retries})")
             time.sleep(delay)
             delay *= 2
 
