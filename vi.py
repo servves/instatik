@@ -8,6 +8,7 @@ import requests
 from datetime import datetime
 from typing import List, Dict
 from pathlib import Path
+from bs4 import BeautifulSoup  # Add this import
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
@@ -39,15 +40,142 @@ class InstagramDownloader:
             post_metadata_txt_pattern='',
             max_connection_attempts=3
         )
-        
+        self.session = requests.Session()
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Cookie': 'ig_did=...; csrftoken=...; sessionid=...',  # Instagram oturumu için gerekli çerezler
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1'
+        }
+
     def login(self, username: str, password: str) -> bool:
         try:
             self.L.login(username, password)
+            # Instaloader oturum çerezlerini al
+            for cookie in self.L.context._session.cookies:
+                self.session.cookies.set(cookie.name, cookie.value, domain='.instagram.com')
             return True
         except Exception as e:
             logging.error(f"Instagram login error: {str(e)}")
             return False
 
+    def download_by_hashtag(self, hashtag: str, count: int = 10, download_path: str = None) -> List[str]:
+        downloaded_files = []
+        try:
+            # Remove '#' if present and encode the hashtag
+            hashtag = hashtag.strip('#')
+            encoded_hashtag = requests.utils.quote(hashtag)
+            
+            # Initial search URL
+            search_url = f"https://www.instagram.com/explore/search/keyword/?q=%23{encoded_hashtag}"
+            
+            # Get the CSRF token first
+            initial_response = self.session.get("https://www.instagram.com/")
+            csrf_token = None
+            for cookie in self.session.cookies:
+                if cookie.name == "csrftoken":
+                    csrf_token = cookie.value
+                    break
+                
+            if csrf_token:
+                self.headers.update({
+                    'X-CSRFToken': csrf_token,
+                    'X-IG-App-ID': '936619743392459',
+                    'X-ASBD-ID': '198387',
+                    'X-IG-WWW-Claim': '0',
+                    'X-Requested-With': 'XMLHttpRequest'
+                })
+    
+            # Make the search request
+            response = self.session.get(
+                search_url,
+                headers=self.headers,
+                params={
+                    '__a': '1',
+                    '__d': 'dis'
+                }
+            )
+    
+            if response.status_code == 200:
+                try:
+                    # Get the hashtag ID from the response
+                    search_data = response.json()
+                    
+                    if 'data' in search_data and 'hashtags' in search_data['data']:
+                        hashtag_data = search_data['data']['hashtags'][0]
+                        hashtag_id = hashtag_data['id']
+    
+                        # Now fetch the posts using GraphQL API
+                        variables = {
+                            'tag_name': hashtag,
+                            'first': count,
+                            'after': None
+                        }
+                        
+                        graphql_url = 'https://www.instagram.com/graphql/query/'
+                        graphql_params = {
+                            'query_hash': '9b498c08113f1e09617a1703c22b2f32',
+                            'variables': json.dumps(variables)
+                        }
+                        
+                        posts_response = self.session.get(
+                            graphql_url,
+                            params=graphql_params,
+                            headers=self.headers
+                        )
+    
+                        if posts_response.status_code == 200:
+                            posts_data = posts_response.json()
+                            
+                            if 'data' in posts_data and 'hashtag' in posts_data['data']:
+                                edges = posts_data['data']['hashtag']['edge_hashtag_to_media']['edges']
+                                
+                                for idx, edge in enumerate(edges):
+                                    if idx >= count:
+                                        break
+                                        
+                                    try:
+                                        shortcode = edge['node']['shortcode']
+                                        post = Post.from_shortcode(self.L.context, shortcode)
+                                        time.sleep(random.uniform(2, 4))
+                                        
+                                        if download_path:
+                                            target_path = os.path.join(download_path, f"hashtag_{hashtag}")
+                                            os.makedirs(target_path, exist_ok=True)
+                                            self.L.download_post(post, target=target_path)
+                                        else:
+                                            self.L.download_post(post)
+                                            
+                                        downloaded_files.append(post.url)
+                                        logging.info(f"Downloaded post {shortcode}")
+                                        
+                                    except Exception as e:
+                                        logging.error(f"Error downloading post: {str(e)}")
+                                        continue
+                            else:
+                                logging.error("No hashtag data found in GraphQL response")
+                        else:
+                            logging.error(f"GraphQL request failed with status {posts_response.status_code}")
+                    else:
+                        logging.error("No hashtag data found in search response")
+                        
+                except json.JSONDecodeError as e:
+                    logging.error(f"Error parsing JSON response: {str(e)}")
+                    logging.error(f"Response content: {response.text[:500]}")
+                    
+            else:
+                logging.error(f"Search request failed with status {response.status_code}")
+                
+        except Exception as e:
+            logging.error(f"Error in hashtag download: {str(e)}")
+            
+        return downloaded_files
+    
     def download_by_username(self, username: str, count: int = 10, download_path: str = None) -> List[str]:
         downloaded_files = []
         try:
@@ -77,36 +205,6 @@ class InstagramDownloader:
             logging.error(f"Error fetching profile: {str(e)}")
             
         return downloaded_files
-
-    def download_by_hashtag(self, hashtag: str, count: int = 10, download_path: str = None) -> List[str]:
-        downloaded_files = []
-        try:
-            posts = self.L.get_hashtag_posts(hashtag)
-            
-            for idx, post in enumerate(posts):
-                if idx >= count:
-                    break
-                    
-                try:
-                    time.sleep(random.uniform(2, 4))
-                    
-                    if download_path:
-                        self.L.download_post(post, target=download_path)
-                    else:
-                        self.L.download_post(post)
-                        
-                    downloaded_files.append(post.url)
-                    logging.info(f"Downloaded hashtag post {post.shortcode}")
-                    
-                except Exception as e:
-                    logging.error(f"Error downloading hashtag post: {str(e)}")
-                    continue
-                    
-        except Exception as e:
-            logging.error(f"Error fetching hashtag: {str(e)}")
-            
-        return downloaded_files
-
 class TikTokDownloader:
     def __init__(self):
         self.api = TikTokApi()
@@ -213,22 +311,27 @@ class DownloadWorker(QThread):
             if self.platform == "instagram":
                 downloader = InstagramDownloader()
                 
-                if self.credentials:
+                # Only attempt login if credentials are provided
+                if self.credentials and self.credentials.get('username') and self.credentials.get('password'):
                     if not downloader.login(
                         self.credentials.get('username'),
                         self.credentials.get('password')
                     ):
-                        self.error.emit("Instagram login failed")
-                        return
+                        self.error.emit("Instagram login failed. Continuing without login...")
                 
                 if self.download_type == "username":
                     files = downloader.download_by_username(
                         self.query, self.count, self.download_path
                     )
-                else:
+                else:  # hashtag
                     files = downloader.download_by_hashtag(
                         self.query, self.count, self.download_path
                     )
+                    
+                if files:
+                    self.progress.emit(f"İndirilen dosya sayısı: {len(files)}")
+                else:
+                    self.error.emit("No files were downloaded")
                     
             else:  # TikTok
                 downloader = TikTokDownloader()
@@ -242,13 +345,13 @@ class DownloadWorker(QThread):
                         self.query, self.count, self.download_path
                     )
             
-            self.progress.emit(f"İndirilen dosya sayısı: {len(files)}")
+                self.progress.emit(f"İndirilen dosya sayısı: {len(files)}")
+            
             self.finished.emit()
             
         except Exception as e:
             self.error.emit(str(e))
             logging.error(f"Download error: {str(e)}")
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -430,9 +533,9 @@ class MainWindow(QMainWindow):
             self.update_progress("İndirme durduruldu.")
 
     def update_progress(self, message):
-        if self.current_worker.platform == "instagram":
+        if self.current_worker and self.current_worker.platform == "instagram":
             self.insta_progress.append(f"{datetime.now().strftime('%H:%M:%S')} - {message}")
-        else:
+        elif self.current_worker:
             self.tiktok_progress.append(f"{datetime.now().strftime('%H:%M:%S')} - {message}")
 
     def show_error(self, message):
