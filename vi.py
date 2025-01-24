@@ -141,6 +141,18 @@ class InstagramDownloadWorker(DownloadWorker):
             logging.error(f"Instagram login error: {str(e)}")
             return False
 
+    def search_with_new_endpoint(self, keyword):
+        url = f"https://www.instagram.com/explore/search/keyword/?q={keyword}"
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except requests.RequestException as e:
+            self.error.emit(f"Yeni endpoint ile arama hatası: {str(e)}")
+            logging.error(f"Instagram new endpoint search error: {str(e)}")
+            return None
+
     def run(self):
         try:
             if not self.L.context.is_logged_in:
@@ -158,10 +170,15 @@ class InstagramDownloadWorker(DownloadWorker):
                 try:
                     posts = self.L.get_hashtag_posts(self.keyword)
                     self.progress.emit(f"#{self.keyword} hashtag'i için sonuçlar bulundu")
-                except Exception as e:
-                    self.error.emit(f"Arama hatası: {str(e)}")
-                    logging.error(f"Instagram search error: {str(e)}")
-                    return
+                except Exception:
+                    search_results = self.search_with_new_endpoint(self.keyword)
+                    if search_results:
+                        posts = self.L.get_hashtag_posts(self.keyword)
+                        self.progress.emit(f"Yeni endpoint ile arama sonuçları bulundu")
+                    else:
+                        self.error.emit(f"Arama hatası: Yeni endpoint ile arama başarısız")
+                        logging.error(f"Instagram search error: New endpoint search failed")
+                        return
 
             total_downloaded = 0
             for post in posts:
