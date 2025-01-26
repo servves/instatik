@@ -42,10 +42,10 @@ class InstagramDownloader:
         )
         self.session = requests.Session()
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
-            'Cookie': 'ig_did=...; csrftoken=...; sessionid=...',  # Instagram oturumu için gerekli çerezler
+            'Cookie': '',  # Boş bırakın, login sırasında doldurulacak
             'Sec-Fetch-Dest': 'document',
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
@@ -55,156 +55,162 @@ class InstagramDownloader:
 
     def login(self, username: str, password: str) -> bool:
         try:
+            # Instagram'a giriş yap
             self.L.login(username, password)
-            # Instaloader oturum çerezlerini al
-            for cookie in self.L.context._session.cookies:
-                self.session.cookies.set(cookie.name, cookie.value, domain='.instagram.com')
-            return True
-        except Exception as e:
-            logging.error(f"Instagram login error: {str(e)}")
-            return False
-
-    def download_by_hashtag(self, hashtag: str, count: int = 10, download_path: str = None) -> List[str]:
-        downloaded_files = []
-        try:
-            # Remove '#' if present and encode the hashtag
-            hashtag = hashtag.strip('#')
-            encoded_hashtag = requests.utils.quote(hashtag)
             
-            # Initial search URL
-            search_url = f"https://www.instagram.com/explore/search/keyword/?q=%23{encoded_hashtag}"
+            # Session çerezlerini ve headers'ı güncelle
+            self.session.cookies.update(self.L.context._session.cookies)
             
-            # Get the CSRF token first
-            initial_response = self.session.get("https://www.instagram.com/")
-            csrf_token = None
-            for cookie in self.session.cookies:
-                if cookie.name == "csrftoken":
-                    csrf_token = cookie.value
-                    break
-                
-            if csrf_token:
-                self.headers.update({
-                    'X-CSRFToken': csrf_token,
-                    'X-IG-App-ID': '936619743392459',
-                    'X-ASBD-ID': '198387',
-                    'X-IG-WWW-Claim': '0',
-                    'X-Requested-With': 'XMLHttpRequest'
-                })
-    
-            # Make the search request
-            response = self.session.get(
-                search_url,
-                headers=self.headers,
-                params={
-                    '__a': '1',
-                    '__d': 'dis'
-                }
+            # CSRF token ve diğer önemli bilgileri al
+            csrf_token = next(
+                (cookie.value for cookie in self.L.context._session.cookies 
+                 if cookie.name == 'csrftoken'), 
+                None
             )
-    
-            if response.status_code == 200:
-                try:
-                    # Get the hashtag ID from the response
-                    search_data = response.json()
-                    
-                    if 'data' in search_data and 'hashtags' in search_data['data']:
-                        hashtag_data = search_data['data']['hashtags'][0]
-                        hashtag_id = hashtag_data['id']
-    
-                        # Now fetch the posts using GraphQL API
-                        variables = {
-                            'tag_name': hashtag,
-                            'first': count,
-                            'after': None
-                        }
-                        
-                        graphql_url = 'https://www.instagram.com/graphql/query/'
-                        graphql_params = {
-                            'query_hash': '9b498c08113f1e09617a1703c22b2f32',
-                            'variables': json.dumps(variables)
-                        }
-                        
-                        posts_response = self.session.get(
-                            graphql_url,
-                            params=graphql_params,
-                            headers=self.headers
-                        )
-    
-                        if posts_response.status_code == 200:
-                            posts_data = posts_response.json()
-                            
-                            if 'data' in posts_data and 'hashtag' in posts_data['data']:
-                                edges = posts_data['data']['hashtag']['edge_hashtag_to_media']['edges']
-                                
-                                for idx, edge in enumerate(edges):
-                                    if idx >= count:
-                                        break
-                                        
-                                    try:
-                                        shortcode = edge['node']['shortcode']
-                                        post = Post.from_shortcode(self.L.context, shortcode)
-                                        time.sleep(random.uniform(2, 4))
-                                        
-                                        if download_path:
-                                            target_path = os.path.join(download_path, f"hashtag_{hashtag}")
-                                            os.makedirs(target_path, exist_ok=True)
-                                            self.L.download_post(post, target=target_path)
-                                        else:
-                                            self.L.download_post(post)
-                                            
-                                        downloaded_files.append(post.url)
-                                        logging.info(f"Downloaded post {shortcode}")
-                                        
-                                    except Exception as e:
-                                        logging.error(f"Error downloading post: {str(e)}")
-                                        continue
-                            else:
-                                logging.error("No hashtag data found in GraphQL response")
-                        else:
-                            logging.error(f"GraphQL request failed with status {posts_response.status_code}")
-                    else:
-                        logging.error("No hashtag data found in search response")
-                        
-                except json.JSONDecodeError as e:
-                    logging.error(f"Error parsing JSON response: {str(e)}")
-                    logging.error(f"Response content: {response.text[:500]}")
-                    
-            else:
-                logging.error(f"Search request failed with status {response.status_code}")
-                
-        except Exception as e:
-            logging.error(f"Error in hashtag download: {str(e)}")
             
-        return downloaded_files
-    
+            if not csrf_token:
+                raise Exception("CSRF token alınamadı")
+                
+            # Headers'ı güncelle
+            self.headers.update({
+                'X-CSRFToken': csrf_token,
+                'X-IG-App-ID': '936619743392459',
+                'X-ASBD-ID': '198387',
+                'X-IG-WWW-Claim': self.L.context.www_claim,
+                'Origin': 'https://www.instagram.com',
+                'Referer': 'https://www.instagram.com/'
+            })
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Instagram login hatası: {str(e)}")
+            return False
+        
+    def download_by_hashtag(self, hashtag: str, count: int = 10, download_path: str = None) -> List[str]:
+            downloaded_files = []
+            try:
+                # Hashtag'i temizle
+                hashtag = hashtag.strip('#')
+
+                # Download path kontrolü ve oluşturma
+                if download_path:
+                    target_path = os.path.join(download_path, f"hashtag_{hashtag}")
+                else:
+                    target_path = os.path.join(os.getcwd(), f"hashtag_{hashtag}")
+
+                # Dizini oluştur
+                os.makedirs(target_path, exist_ok=True)
+
+                # Log dizin bilgisi
+                logging.info(f"İndirme dizini: {target_path}")
+
+                try:
+                    # Hashtag gönderilerini al
+                    posts = self.L.get_hashtag_posts(hashtag)
+                    downloaded = 0
+
+                    for post in posts:
+                        if downloaded >= count:
+                            break
+
+                        try:
+                            # Post indirme
+                            self.L.download_post(post, target=target_path)
+
+                            # İndirilen dosya adını belirle
+                            file_name = f"{post.date_utc:%Y-%m-%d_%H-%M-%S}_{post.shortcode}"
+                            if post.is_video:
+                                file_name += ".mp4"
+                            else:
+                                file_name += ".jpg"
+
+                            file_path = os.path.join(target_path, file_name)
+
+                            # Dosyanın var olduğunu kontrol et
+                            if os.path.exists(file_path):
+                                downloaded_files.append(file_path)
+                                downloaded += 1
+                                logging.info(f"İndirilen: {file_name} ({downloaded}/{count})")
+                            else:
+                                logging.warning(f"Dosya oluşturulamadı: {file_name}")
+
+                            # Rate limiting önlemi
+                            time.sleep(random.uniform(2, 4))
+
+                        except Exception as e:
+                            logging.error(f"Post indirme hatası ({post.shortcode}): {str(e)}")
+                            continue
+                        
+                    if not downloaded_files:
+                        raise Exception("Hiç dosya indirilemedi!")
+
+                    return downloaded_files
+
+                except Exception as e:
+                    logging.error(f"Hashtag gönderileri alınamadı: {str(e)}")
+                    raise
+
+            except Exception as e:
+                logging.error(f"Hashtag indirme hatası: {str(e)}")
+                raise
+            
     def download_by_username(self, username: str, count: int = 10, download_path: str = None) -> List[str]:
         downloaded_files = []
         try:
-            profile = Profile.from_username(self.L.context, username)
-            posts = profile.get_posts()
+            # Download path kontrolü ve oluşturma
+            if download_path:
+                target_path = os.path.join(download_path, f"user_{username}")
+            else:
+                target_path = os.path.join(os.getcwd(), f"user_{username}")
             
-            for idx, post in enumerate(posts):
-                if idx >= count:
+            os.makedirs(target_path, exist_ok=True)
+            logging.info(f"İndirme dizini: {target_path}")
+            
+            # Profili al
+            profile = Profile.from_username(self.L.context, username)
+            downloaded = 0
+            
+            for post in profile.get_posts():
+                if downloaded >= count:
                     break
                     
                 try:
+                    # Post indirme
+                    self.L.download_post(post, target=target_path)
+                    
+                    # İndirilen dosya adını belirle
+                    file_name = f"{post.date_utc:%Y-%m-%d_%H-%M-%S}_{post.shortcode}"
+                    if post.is_video:
+                        file_name += ".mp4"
+                    else:
+                        file_name += ".jpg"
+                        
+                    file_path = os.path.join(target_path, file_name)
+                    
+                    # Dosyanın var olduğunu kontrol et
+                    if os.path.exists(file_path):
+                        downloaded_files.append(file_path)
+                        downloaded += 1
+                        logging.info(f"İndirilen: {file_name} ({downloaded}/{count})")
+                    else:
+                        logging.warning(f"Dosya oluşturulamadı: {file_name}")
+                    
+                    # Rate limiting önlemi
                     time.sleep(random.uniform(2, 4))
                     
-                    if download_path:
-                        self.L.download_post(post, target=download_path)
-                    else:
-                        self.L.download_post(post)
-                        
-                    downloaded_files.append(post.url)
-                    logging.info(f"Downloaded post {post.shortcode}")
-                    
                 except Exception as e:
-                    logging.error(f"Error downloading post: {str(e)}")
+                    logging.error(f"Post indirme hatası ({post.shortcode}): {str(e)}")
                     continue
-                    
-        except Exception as e:
-            logging.error(f"Error fetching profile: {str(e)}")
             
-        return downloaded_files
+            if not downloaded_files:
+                raise Exception("Hiç dosya indirilemedi!")
+                
+            return downloaded_files
+            
+        except Exception as e:
+            logging.error(f"Kullanıcı gönderileri indirme hatası: {str(e)}")
+            raise
 class TikTokDownloader:
     def __init__(self):
         self.api = TikTokApi()
@@ -258,37 +264,117 @@ class TikTokDownloader:
     def download_by_hashtag(self, hashtag: str, count: int = 10, download_path: str = None) -> List[str]:
         downloaded_files = []
         try:
-            hashtag_videos = self.api.hashtag(name=hashtag).videos(count=count)
-            
-            for video in hashtag_videos:
-                try:
-                    video_url = video.info()['video']['downloadAddr']
-                    filename = f"hashtag_{hashtag}_{video.id}.mp4"
-                    
-                    if download_path:
-                        filepath = os.path.join(download_path, filename)
+            # Hashtag'i temizle
+            hashtag = hashtag.strip('#')
+
+            # Download path kontrolü ve oluşturma
+            if download_path:
+                target_path = os.path.join(download_path, f"hashtag_{hashtag}")
+            else:
+                target_path = os.path.join(os.getcwd(), f"hashtag_{hashtag}")
+
+            os.makedirs(target_path, exist_ok=True)
+            logging.info(f"İndirme dizini: {target_path}")
+
+            # Önce login kontrolü
+            if not self.L.context.is_logged_in:
+                raise Exception("Instagram'a giriş yapmanız gerekiyor!")
+
+            # GraphQL sorgusu için gerekli headers
+            graphql_headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'X-CSRFToken': self.L.context.csrf_token,
+                'X-IG-App-ID': '936619743392459',
+                'X-ASBD-ID': '198387',
+                'X-IG-WWW-Claim': self.L.context.www_claim,
+                'Origin': 'https://www.instagram.com',
+                'Referer': f'https://www.instagram.com/explore/tags/{hashtag}/',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+            }
+
+            # GraphQL sorgu parametreleri
+            variables = {
+                "tag_name": hashtag,
+                "first": min(count, 50),
+                "after": None
+            }
+
+            query_hash = "9b498c08113f1e09617a1703c22b2f32"  # Hashtag sorgusu için query hash
+
+            graphql_url = "https://www.instagram.com/graphql/query/"
+            params = {
+                "query_hash": query_hash,
+                "variables": json.dumps(variables)
+            }
+
+            try:
+                # GraphQL sorgusu yap
+                response = self.session.get(
+                    graphql_url,
+                    params=params,
+                    headers=graphql_headers,
+                    cookies=self.L.context._session.cookies,
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data and 'hashtag' in data['data']:
+                        edges = data['data']['hashtag']['edge_hashtag_to_media']['edges']
+                        downloaded = 0
+
+                        for edge in edges:
+                            if downloaded >= count:
+                                break
+
+                            try:
+                                shortcode = edge['node']['shortcode']
+                                post = Post.from_shortcode(self.L.context, shortcode)
+
+                                # Post indirme
+                                self.L.download_post(post, target=target_path)
+
+                                # İndirilen dosya adını belirle
+                                file_name = f"{post.date_utc:%Y-%m-%d_%H-%M-%S}_{post.shortcode}"
+                                if post.is_video:
+                                    file_name += ".mp4"
+                                else:
+                                    file_name += ".jpg"
+
+                                file_path = os.path.join(target_path, file_name)
+
+                                if os.path.exists(file_path):
+                                    downloaded_files.append(file_path)
+                                    downloaded += 1
+                                    logging.info(f"İndirilen: {file_name} ({downloaded}/{count})")
+
+                                # Rate limiting önlemi
+                                time.sleep(random.uniform(2, 4))
+
+                            except Exception as e:
+                                logging.error(f"Post indirme hatası ({shortcode}): {str(e)}")
+                                continue
                     else:
-                        filepath = filename
-                        
-                    response = self.session.get(video_url, stream=True)
-                    if response.status_code == 200:
-                        with open(filepath, 'wb') as f:
-                            for chunk in response.iter_content(chunk_size=1024):
-                                if chunk:
-                                    f.write(chunk)
-                        downloaded_files.append(filepath)
-                        logging.info(f"Downloaded TikTok hashtag video: {filename}")
-                    
-                    time.sleep(random.uniform(1, 3))
-                    
-                except Exception as e:
-                    logging.error(f"Error downloading hashtag video: {str(e)}")
-                    continue
-                    
+                        raise Exception("Hashtag verisi bulunamadı")
+                else:
+                    raise Exception(f"GraphQL sorgusu başarısız: {response.status_code}")
+
+            except Exception as e:
+                logging.error(f"GraphQL sorgu hatası: {str(e)}")
+                raise
+
+            if not downloaded_files:
+                raise Exception("Hiç dosya indirilemedi!")
+
+            return downloaded_files
+
         except Exception as e:
-            logging.error(f"Error fetching TikTok hashtag: {str(e)}")
-            
-        return downloaded_files
+            logging.error(f"Hashtag indirme hatası: {str(e)}")
+            raise
 
 class DownloadWorker(QThread):
     progress = pyqtSignal(str)
@@ -306,34 +392,50 @@ class DownloadWorker(QThread):
         self.credentials = credentials
         self.is_running = True
 
+
     def run(self):
         try:
+            # Download path kontrolü
+            if not self.download_path:
+                self.download_path = os.path.join(os.getcwd(), "downloads")
+            
+            # Ana indirme dizinini oluştur
+            os.makedirs(self.download_path, exist_ok=True)
+            
             if self.platform == "instagram":
                 downloader = InstagramDownloader()
                 
-                # Only attempt login if credentials are provided
+                # Giriş kontrolü
                 if self.credentials and self.credentials.get('username') and self.credentials.get('password'):
                     if not downloader.login(
                         self.credentials.get('username'),
                         self.credentials.get('password')
                     ):
-                        self.error.emit("Instagram login failed. Continuing without login...")
+                        self.error.emit("Instagram girişi başarısız!")
+                        return
+                    
+                    self.progress.emit("Instagram girişi başarılı!")
                 
-                if self.download_type == "username":
-                    files = downloader.download_by_username(
-                        self.query, self.count, self.download_path
-                    )
-                else:  # hashtag
-                    files = downloader.download_by_hashtag(
-                        self.query, self.count, self.download_path
-                    )
+                try:
+                    if self.download_type == "username":
+                        self.progress.emit(f"Kullanıcı '{self.query}' için indirme başlatılıyor...")
+                        files = downloader.download_by_username(
+                            self.query, self.count, self.download_path
+                        )
+                    else:  # hashtag
+                        self.progress.emit(f"Hashtag '#{self.query}' için indirme başlatılıyor...")
+                        files = downloader.download_by_hashtag(
+                            self.query, self.count, self.download_path
+                        )
                     
-                if files:
-                    self.progress.emit(f"İndirilen dosya sayısı: {len(files)}")
-                else:
-                    self.error.emit("No files were downloaded")
-                    
-            else:  # TikTok
+                    if files:
+                        self.progress.emit(f"İndirme tamamlandı! Toplam {len(files)} dosya indirildi.")
+                    else:
+                        self.error.emit("Hiç dosya indirilemedi!")
+                        
+                except Exception as e:
+                    self.error.emit(f"İndirme hatası: {str(e)}")
+                    return  # TikTok
                 downloader = TikTokDownloader()
                 
                 if self.download_type == "username":
@@ -350,7 +452,7 @@ class DownloadWorker(QThread):
             self.finished.emit()
             
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(f"İndirme hatası: {str(e)}")
             logging.error(f"Download error: {str(e)}")
 class MainWindow(QMainWindow):
     def __init__(self):
